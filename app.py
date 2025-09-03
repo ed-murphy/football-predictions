@@ -69,7 +69,7 @@ st.markdown(
 
 # Display dataframe
 st.dataframe(
-    display_df[["Game Date", "Home team", "Away team", "Predicted Points Scored"]],
+    display_df[["Game Date", "Home team", "Away team", "Predicted Points"]],
     use_container_width=True,
     hide_index=True
 )
