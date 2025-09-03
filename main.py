@@ -11,7 +11,7 @@ from src.upcoming import prepare_upcoming_team_games
 from src.predictions import save_predictions
 
 
-def main():
+def run_analysis():
 
     # Load historical play-level and game-level data using nfl_data_py
     games, plays = load_data()
@@ -49,7 +49,10 @@ def main():
     )
 
     # Use model to generate predictions for upcoming games
-    save_predictions(upcoming_team_games)
+    predictions = save_predictions(upcoming_team_games)
+
+    return predictions
+
 
 if __name__ == "__main__":
-    main()
+    run_analysis()
