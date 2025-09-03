@@ -1,0 +1,9 @@
+pandas
+numpy
+scikit-learn
+streamlit
+joblib
+meteostat
+requests
+python-dotenv
+pytz

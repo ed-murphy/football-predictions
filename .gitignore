@@ -1,0 +1,7 @@
+data/
+download/download_env/
+model/
+model_env/
+predictions/
+.env
+__pycache__
