@@ -46,8 +46,8 @@ display_df['predicted_total'] = display_df['predicted_total'].round(1)
 display_df = display_df.rename(
     columns={
         "date": "Game Date",
-        "home_team": "Home team",
-        "away_team": "Away team",
+        "home_team": "Home",
+        "away_team": "Away",
         "predicted_total": "Predicted Points"
     }
 )
@@ -69,7 +69,7 @@ st.markdown(
 
 # Display dataframe
 st.dataframe(
-    display_df[["Game Date", "Home team", "Away team", "Predicted Points"]],
+    display_df[["Game Date", "Home", "Away", "Predicted Points"]],
     use_container_width=True,
     hide_index=True
 )
