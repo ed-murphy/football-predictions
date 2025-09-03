@@ -1,4 +1,3 @@
-data/weather_cache/
 data/nfl_over_unders.csv
 data/nfl_weather_forecasts.csv
 download/download_env/
