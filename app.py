@@ -18,7 +18,6 @@ st.markdown(
 )
 
 st.title("NFL Scoring Predictions")
-st.subheader("Predictions for future weeks are subject to change.")
 
 pred_dir = "predictions"
 csv_files = [f for f in os.listdir(pred_dir) if f.endswith('.csv')]
@@ -49,7 +48,7 @@ display_df = display_df.rename(
         "date": "Game Date",
         "home_team": "Home team",
         "away_team": "Away team",
-        "predicted_total": "Predicted Points Scored"
+        "predicted_total": "Predicted Points"
     }
 )
 
