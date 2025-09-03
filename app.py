@@ -1,17 +1,23 @@
 import pandas as pd
 import streamlit as st
 from datetime import datetime
-from main import run_analysis
+import os
 
 st.set_page_config(layout='centered')
 st.title("NFL Scoring Predictions")
 st.subheader("Predictions for future weeks are subject to change.")
 
-# Run full analysis and get predictions
-predictions = run_analysis()
+pred_dir = "predictions"
+csv_files = [f for f in os.listdir(pred_dir) if f.endswith('.csv')]
+if not csv_files:
+    raise FileNotFoundError("No predictions files found.")
+latest_csv = max(csv_files, key=lambda x: os.path.getmtime(os.path.join(pred_dir, x)))
+latest_path = os.path.join(pred_dir, latest_csv)
+predictions = pd.read_csv(latest_path)
 
 # Compute NFL week
 start_date = datetime(2025, 9, 4)  # Season start
+predictions['date'] = pd.to_datetime(predictions['date'])
 predictions['week'] = ((predictions['date'] - start_date).dt.days // 7 + 1).clip(lower=1)
 
 # Dropdown to select week

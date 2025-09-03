@@ -1,6 +1,5 @@
 download/download_env/
 model_env/
-predictions/
 .env
 __pycache__
 .venv/
