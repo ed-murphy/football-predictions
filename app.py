@@ -3,7 +3,20 @@ import streamlit as st
 from datetime import datetime
 import os
 
-st.set_page_config(layout='centered')
+st.set_page_config(layout='wide')
+
+st.markdown(
+    """
+    <style>
+    .main {
+        max-width: 400px;
+        margin: auto;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 st.title("NFL Scoring Predictions")
 st.subheader("Predictions for future weeks are subject to change.")
 
