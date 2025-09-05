@@ -3,3 +3,4 @@ model_env/
 .env
 __pycache__
 .venv/
+old_predictions/
