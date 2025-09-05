@@ -60,7 +60,7 @@ def create_qb_features(team_games, plays):
                     ['game_id', 'qb_avg_epa', 'qb_avg_epa_rolling', 'starting_qb']]
         .rename(columns={
             'qb_avg_epa': 'home_qb_avg_epa',
-            'qb_avg_epa_rolling': 'home_qb_avg_epa_rolling',
+            'qb_avg_epa_rolling': 'home_rolling_avg_qb_epa',
             'starting_qb': 'home_starting_qb'
         })
     )
@@ -70,7 +70,7 @@ def create_qb_features(team_games, plays):
                     ['game_id', 'qb_avg_epa', 'qb_avg_epa_rolling', 'starting_qb']]
         .rename(columns={
             'qb_avg_epa': 'away_qb_avg_epa',
-            'qb_avg_epa_rolling': 'away_qb_avg_epa_rolling',
+            'qb_avg_epa_rolling': 'away_rolling_avg_qb_epa',
             'starting_qb': 'away_starting_qb'
         })
     )
