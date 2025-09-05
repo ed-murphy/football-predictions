@@ -38,11 +38,11 @@ def create_defense_features(team_games: pd.DataFrame, plays: pd.DataFrame) -> pd
     # split into home/away views
     home_def_features = (
         team_games[team_games['is_home'] == 1][['game_id', 'def_epa_rolling']]
-        .rename(columns={'def_epa_rolling': 'away_def_epa'})
+        .rename(columns={'def_epa_rolling': 'home_rolling_avg_def_epa'})
     )
     away_def_features = (
         team_games[team_games['is_home'] == 0][['game_id', 'def_epa_rolling']]
-        .rename(columns={'def_epa_rolling': 'home_def_epa'})
+        .rename(columns={'def_epa_rolling': 'away_rolling_avg_def_epa'})
     )
 
     # merge back
