@@ -42,13 +42,19 @@ def train_and_evaluate(
 
     # Features for prediction
     features = [
-        "total_line",  # Vegas total
-        "home_avg_points_for", "home_avg_points_against",
-        "away_avg_points_for", "away_avg_points_against",
-        "home_qb_avg_epa", "away_qb_avg_epa",
-        "home_def_epa", "away_def_epa",
-        "home_temperature", "home_wind_speed",
-        "home_pace_last5", "away_pace_last5",
+        "total_line", # Vegas total for benchmarking
+        "home_rolling_avg_points_for",
+        "home_rolling_avg_points_against",
+        "away_rolling_avg_points_for",
+        "away_rolling_avg_points_against",
+        "home_rolling_avg_qb_epa",
+        "away_rolling_avg_qb_epa",
+        "home_rolling_avg_def_epa",
+        "away_rolling_avg_def_epa",
+        "home_temperature",
+        "home_wind_speed",
+        "home_rolling_avg_off_pace",
+        "away_rolling_avg_off_pace",
     ]
 
     # Keep one row per game (home team)
