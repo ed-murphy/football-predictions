@@ -2,6 +2,7 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 import os
+import re
 
 st.set_page_config(layout='wide')
 
@@ -23,9 +24,21 @@ pred_dir = "predictions"
 csv_files = [f for f in os.listdir(pred_dir) if f.endswith('.csv')]
 if not csv_files:
     raise FileNotFoundError("No predictions files found.")
+
+# Get latest CSV file
 latest_csv = max(csv_files, key=lambda x: os.path.getmtime(os.path.join(pred_dir, x)))
 latest_path = os.path.join(pred_dir, latest_csv)
 predictions = pd.read_csv(latest_path)
+
+# --- Extract date from filename (handles optional _v1, _v2, etc.) ---
+match = re.search(r'_(\d{8})', latest_csv)
+if match:
+    file_date_str = match.group(1)  # e.g., '20250905'
+    file_date = datetime.strptime(file_date_str, "%Y%m%d")
+    formatted_date = file_date.strftime("%#m/%#d/%y")  # e.g., '9/5/25' on Windows
+    st.markdown(f"<p style='color:red; font-weight:bold;'>Predictions last updated on {formatted_date}</p>", unsafe_allow_html=True)
+else:
+    st.warning("Could not parse update date from filename.")
 
 # Compute NFL week
 start_date = datetime(2025, 9, 4)  # Season start
