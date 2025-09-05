@@ -7,11 +7,11 @@ from sklearn.metrics import mean_absolute_error, r2_score
 
 def train_and_evaluate(
     team_games: pd.DataFrame,
-    model_path: str = "model/rf_total_points_model.joblib",
-    train_seasons: list[int] = [2021, 2022, 2023],
-    test_seasons: list[int] = [2024],
-    margin: float = 3.5,
-    random_state: int = 42,
+    model_path: str,
+    train_seasons: list[int],
+    test_seasons: list[int],
+    inspection_margin: float,
+    random_state: int
 ):
     """
     Train and evaluate a RandomForestRegressor to predict total points scored in NFL games.
@@ -27,8 +27,8 @@ def train_and_evaluate(
         Seasons used for training.
     test_seasons : list[int]
         Seasons used for testing.
-    margin : float
-        Minimum difference between model prediction and Vegas total to signal a prediction.
+    inspection_margin : float
+        Proxy for a "strong" scoring prediction relative to Vegas total, used for internal benchmarking.
     random_state : int
         Random seed for reproducibility.
 
@@ -86,8 +86,8 @@ def train_and_evaluate(
     r2 = r2_score(y_test, y_pred)
 
     # Prediction signals
-    over_signals = y_pred > vegas_test + margin
-    under_signals = y_pred < vegas_test - margin
+    over_signals = y_pred > vegas_test + inspection_margin
+    under_signals = y_pred < vegas_test - inspection_margin
     prediction_signals = over_signals | under_signals
 
     num_predictions = prediction_signals.sum()

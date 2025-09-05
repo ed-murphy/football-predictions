@@ -38,7 +38,14 @@ def run_analysis():
     weather_features = get_forecasted_weather(totals)
 
     # Train model and print train/test results
-    model = train_and_evaluate(team_games)
+    model = train_and_evaluate(
+        team_games = team_games,
+        model_path = "model/rf_total_points_model.joblib",
+        train_seasons = [2021, 2022, 2023],
+        test_seasons: [2024],
+        inspection_margin = 5,
+        random_state = 42
+    )
 
     # Prepare upcoming games with all features and predict
     upcoming_team_games = prepare_upcoming_team_games(
