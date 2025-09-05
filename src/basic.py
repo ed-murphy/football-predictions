@@ -20,22 +20,25 @@ def create_basic_features(games):
     team_games = pd.concat([home, away], ignore_index=True)
     team_games = team_games.sort_values(by=['team', 'season', 'week'])
 
-    # rolling averages for points
-    team_games['rolling_avg_points_for'] = team_games.groupby(['team', 'season'])['points_for'].shift().rolling(window=5, min_periods=1).mean()
-    team_games['rolling_avg_points_against'] = team_games.groupby(['team', 'season'])['points_against'].shift().rolling(window=5, min_periods=1).mean()
+    # rolling averages for points (shift so it’s prior games only)
+    team_games['rolling_avg_points_for'] = (
+        team_games.groupby(['team', 'season'])['points_for']
+        .shift()
+        .rolling(window=5, min_periods=1)
+        .mean()
+    )
+    team_games['rolling_avg_points_against'] = (
+        team_games.groupby(['team', 'season'])['points_against']
+        .shift()
+        .rolling(window=5, min_periods=1)
+        .mean()
+    )
 
-    # merge rolling average points for/against
-    home_features = team_games[team_games['is_home'] == 1][['game_id', 'rolling_avg_points_for', 'rolling_avg_points_against']]
-    away_features = team_games[team_games['is_home'] == 0][['game_id', 'rolling_avg_points_for', 'rolling_avg_points_against']]
-    team_games = team_games.merge(home_features, on='game_id', how='left')
-    team_games = team_games.merge(away_features, on='game_id', how='left')
-    team_games.rename(columns={
-        'rolling_avg_points_for_x': 'home_rolling_avg_points_for',
-        'rolling_avg_points_against_x': 'home_rolling_avg_points_against',
-        'rolling_avg_points_for_y': 'away_rolling_avg_points_for',
-        'rolling_avg_points_against_y': 'away_rolling_avg_points_against'
-    }, inplace=True)
+    # assign home/away features
+    team_games['home_rolling_avg_points_for'] = team_games.groupby('game_id')['rolling_avg_points_for'].transform(lambda x: x.where(team_games['is_home']==1).max())
+    team_games['home_rolling_avg_points_against'] = team_games.groupby('game_id')['rolling_avg_points_against'].transform(lambda x: x.where(team_games['is_home']==1).max())
+    team_games['away_rolling_avg_points_for'] = team_games.groupby('game_id')['rolling_avg_points_for'].transform(lambda x: x.where(team_games['is_home']==0).max())
+    team_games['away_rolling_avg_points_against'] = team_games.groupby('game_id')['rolling_avg_points_against'].transform(lambda x: x.where(team_games['is_home']==0).max())
 
     print("Basic football features created.")
-
     return team_games

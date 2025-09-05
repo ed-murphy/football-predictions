@@ -28,7 +28,7 @@ def create_defense_features(team_games: pd.DataFrame, plays: pd.DataFrame) -> pd
     team_games = team_games.merge(def_epa, on=['game_id', 'team'], how='left')
 
     # rolling average defensive EPA (last 5 games, per team)
-    team_games['def_epa_rolling'] = (
+    team_games['rolling_avg_def_epa'] = (
         team_games
         .groupby(['team', 'season'])['def_epa']
         .apply(lambda x: x.shift().rolling(window=5, min_periods=1).mean())
@@ -37,12 +37,12 @@ def create_defense_features(team_games: pd.DataFrame, plays: pd.DataFrame) -> pd
 
     # split into home/away views
     home_def_features = (
-        team_games[team_games['is_home'] == 1][['game_id', 'def_epa_rolling']]
-        .rename(columns={'def_epa_rolling': 'home_rolling_avg_def_epa'})
+        team_games[team_games['is_home'] == 1][['game_id', 'rolling_avg_def_epa']]
+        .rename(columns={'rolling_avg_def_epa': 'home_rolling_avg_def_epa'})
     )
     away_def_features = (
-        team_games[team_games['is_home'] == 0][['game_id', 'def_epa_rolling']]
-        .rename(columns={'def_epa_rolling': 'away_rolling_avg_def_epa'})
+        team_games[team_games['is_home'] == 0][['game_id', 'rolling_avg_def_epa']]
+        .rename(columns={'rolling_avg_def_epa': 'away_rolling_avg_def_epa'})
     )
 
     # merge back

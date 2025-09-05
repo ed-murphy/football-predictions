@@ -40,7 +40,7 @@ def create_qb_features(team_games, plays):
 
     qb_epa = qb_epa.sort_values(['qb_name', 'game_id']).reset_index(drop=True)
 
-    qb_epa['qb_avg_epa_rolling'] = (
+    qb_epa['rolling_avg_qb_epa'] = (
         qb_epa.groupby('qb_name')['qb_avg_epa']
         .apply(lambda x: x.shift().rolling(window=5, min_periods=1).mean())
         .reset_index(level=0, drop=True)
@@ -49,7 +49,7 @@ def create_qb_features(team_games, plays):
     team_games = team_games.merge(starting_qbs, on=['game_id', 'team'], how='left')
 
     team_games = team_games.merge(
-        qb_epa[['game_id', 'team', 'qb_name', 'qb_avg_epa', 'qb_avg_epa_rolling']],
+        qb_epa[['game_id', 'team', 'qb_name', 'qb_avg_epa', 'rolling_avg_qb_epa']],
         left_on=['game_id', 'team', 'starting_qb'],
         right_on=['game_id', 'team', 'qb_name'],
         how='left'
@@ -57,20 +57,20 @@ def create_qb_features(team_games, plays):
 
     home_qb_features = (
         team_games.loc[team_games['is_home'] == 1, 
-                    ['game_id', 'qb_avg_epa', 'qb_avg_epa_rolling', 'starting_qb']]
+                    ['game_id', 'qb_avg_epa', 'rolling_avg_qb_epa', 'starting_qb']]
         .rename(columns={
             'qb_avg_epa': 'home_qb_avg_epa',
-            'qb_avg_epa_rolling': 'home_rolling_avg_qb_epa',
+            'rolling_avg_qb_epa': 'home_rolling_avg_qb_epa',
             'starting_qb': 'home_starting_qb'
         })
     )
 
     away_qb_features = (
         team_games.loc[team_games['is_home'] == 0, 
-                    ['game_id', 'qb_avg_epa', 'qb_avg_epa_rolling', 'starting_qb']]
+                    ['game_id', 'qb_avg_epa', 'rolling_avg_qb_epa', 'starting_qb']]
         .rename(columns={
             'qb_avg_epa': 'away_qb_avg_epa',
-            'qb_avg_epa_rolling': 'away_rolling_avg_qb_epa',
+            'rolling_avg_qb_epa': 'away_rolling_avg_qb_epa',
             'starting_qb': 'away_starting_qb'
         })
     )

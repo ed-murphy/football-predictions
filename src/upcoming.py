@@ -40,9 +40,9 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, weather_feature
 
     # Merge rolling averages
     rolling_features = [
-        'avg_points_for', 'avg_points_against',
-        'qb_avg_epa_rolling', 'def_epa_rolling',
-        'home_pace_last5', 'away_pace_last5'
+        'rolling_avg_points_for', 'rolling_avg_points_against',
+        'rolling_avg_qb_epa', 'rolling_avg_def_epa',
+        'rolling_avg_off_pace'
     ]
 
     for feat in rolling_features:
@@ -74,18 +74,18 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, weather_feature
     # Rename columns to match model expectations
     feature_mapping = {
         'total_line' : 'total_line',
-        'avg_points_for_pre_game_home': 'home_avg_points_for',
-        'avg_points_against_pre_game_home': 'home_avg_points_against',
-        'avg_points_for_pre_game_away': 'away_avg_points_for',
-        'avg_points_against_pre_game_away': 'away_avg_points_against',
-        'qb_avg_epa_rolling_pre_game_home': 'home_qb_avg_epa',
-        'qb_avg_epa_rolling_pre_game_away': 'away_qb_avg_epa',
-        'def_epa_rolling_pre_game_home': 'home_def_epa',
-        'def_epa_rolling_pre_game_away': 'away_def_epa',
+        'rolling_avg_points_for_pre_game_home': 'home_rolling_avg_points_for',
+        'rolling_avg_points_against_pre_game_home': 'home_rolling_avg_points_against',
+        'rolling_avg_points_for_pre_game_away': 'away_rolling_avg_points_for',
+        'rolling_avg_points_against_pre_game_away': 'away_rolling_avg_points_against',
+        'rolling_avg_qb_epa_pre_game_home': 'home_rolling_avg_qb_epa',
+        'rolling_avg_qb_epa_pre_game_away': 'away_rolling_avg_qb_epa',
+        'rolling_avg_def_epa_pre_game_home': 'home_rolling_avg_def_epa',
+        'rolling_avg_def_epa_pre_game_away': 'away_rolling_avg_def_epa',
         'temperature_F': 'home_temperature',
         'wind_speed_mph': 'home_wind_speed',
-        'home_pace_last5_pre_game_home': 'home_pace_last5',
-        'away_pace_last5_pre_game_away': 'away_pace_last5'
+        'rolling_avg_off_pace_pre_game_home': 'home_rolling_avg_off_pace',
+        'rolling_avg_off_pace_pre_game_away': 'away_rolling_avg_off_pace'
     }
     game_features = game_features.rename(columns=feature_mapping)
 
