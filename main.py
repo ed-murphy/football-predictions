@@ -42,7 +42,7 @@ def run_analysis():
         team_games = team_games,
         model_path = "model/rf_total_points_model.joblib",
         train_seasons = [2021, 2022, 2023],
-        test_seasons: [2024],
+        test_seasons = [2024],
         inspection_margin = 5,
         random_state = 42
     )
