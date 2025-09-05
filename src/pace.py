@@ -14,14 +14,14 @@ def create_pace_features(team_games: pd.DataFrame, pbp: pd.DataFrame) -> pd.Data
 
     plays_per_game = plays_per_game.sort_values(["posteam", "game_id"])
 
-    plays_per_game["pace_last5"] = (
+    plays_per_game["rolling_avg_off_pace"] = (
         plays_per_game.groupby("posteam")["seconds_per_play"]
         .transform(lambda x: x.rolling(5, min_periods=1).mean())
     )
 
     # --- merge directly onto team_games ---
     team_games = team_games.merge(
-        plays_per_game[["game_id", "posteam", "seconds_per_play", "pace_last5"]],
+        plays_per_game[["game_id", "posteam", "seconds_per_play", "rolling_avg_off_pace"]],
         left_on=["game_id", "team"],
         right_on=["game_id", "posteam"],
         how="left"
@@ -30,12 +30,12 @@ def create_pace_features(team_games: pd.DataFrame, pbp: pd.DataFrame) -> pd.Data
     team_games = team_games.drop(columns=["posteam"])
 
     # --- create home/away pace columns ---
-    team_games["home_pace_last5"] = team_games.loc[team_games["is_home"] == 1, "pace_last5"]
-    team_games["away_pace_last5"] = team_games.loc[team_games["is_home"] == 0, "pace_last5"]
+    team_games["home_rolling_avg_off_pace"] = team_games.loc[team_games["is_home"] == 1, "rolling_avg_off_pace"]
+    team_games["away_rolling_avg_off_pace"] = team_games.loc[team_games["is_home"] == 0, "rolling_avg_off_pace"]
 
     # forward/backfill within each game so both rows have the home/away pace values
-    team_games["home_pace_last5"] = team_games.groupby("game_id")["home_pace_last5"].transform("max")
-    team_games["away_pace_last5"] = team_games.groupby("game_id")["away_pace_last5"].transform("max")
+    team_games["home_rolling_avg_off_pace"] = team_games.groupby("game_id")["home_rolling_avg_off_pace"].transform("max")
+    team_games["away_rolling_avg_off_pace"] = team_games.groupby("game_id")["away_rolling_avg_off_pace"].transform("max")
 
     print("Team pace features created.")
 
