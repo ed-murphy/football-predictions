@@ -1,6 +1,5 @@
 import os
 import nfl_data_py as nfl
-import pandas as pd
 
 # Ensure data directory exists at repo root
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

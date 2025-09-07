@@ -5,10 +5,12 @@ from src.weather import create_weather_features
 from src.totals import get_totals
 from src.qb import create_qb_features
 from src.defense import create_defense_features
-from src.model import train_and_evaluate
+from src.train import train_model
 from src.weather_forecast import get_forecasted_weather
 from src.upcoming import prepare_upcoming_team_games
 from src.predictions import save_predictions
+from src.rest import create_rest_features
+from src.evaluate import evaluate_model
 
 
 def run_analysis():
@@ -20,13 +22,16 @@ def run_analysis():
     team_games = create_basic_features(games)
 
     # Add QB EPA features
-    team_games = create_qb_features(team_games, plays)
+    team_games, latest_qb_epa = create_qb_features(team_games, plays)
 
     # Add defense EPA features
     team_games = create_defense_features(team_games, plays)
 
     # Add pace features
     team_games = create_pace_features(team_games, plays)
+
+    # Add rest features
+    team_games = create_rest_features(team_games)
 
     # Add weather features
     team_games = create_weather_features(team_games)
@@ -37,20 +42,30 @@ def run_analysis():
     # Load weather forecasts
     weather_features = get_forecasted_weather(totals)
 
-    # Train model and print train/test results
-    model = train_and_evaluate(
+    # Train model
+    model, X_test, y_test, features, test_data = train_model(
         team_games = team_games,
         model_path = "model/rf_total_points_model.joblib",
         train_seasons = [2021, 2022, 2023],
         test_seasons = [2024],
-        inspection_margin = 5,
         random_state = 42
+    )
+
+    # Evaluate model
+    evaluate_model(
+        model,
+        X_test,
+        y_test,
+        features,
+        test_data,
+        precision_margin=2.5
     )
 
     # Prepare upcoming games with all features and predict
     upcoming_team_games = prepare_upcoming_team_games(
         totals,
         team_games,
+        latest_qb_epa,
         weather_features,
         model
     )
