@@ -57,8 +57,8 @@ def create_weather_features(team_games, cache_dir="data/weather_cache"):
 
     # Dome teams
     dome_teams = {
-        "Cardinals", "Falcons", "Cowboys", "Lions", "Texans",
-        "Colts", "Raiders", "Chargers", "Rams", "Vikings", "Saints"
+        "ARI", "ATL", "DAL", "DET", "HOU",
+        "IND", "LV", "LAC", "LA", "MIN", "NO"
     }
 
     # Initialize weather columns
@@ -76,9 +76,17 @@ def create_weather_features(team_games, cache_dir="data/weather_cache"):
 
         # Skip dome teams (set neutral weather)
         if team in dome_teams:
-            team_games.loc[team_mask, "home_temperature"] = 70
+            team_games.loc[team_mask, "home_temperature"] = 21.1
             team_games.loc[team_mask, "home_precipitation"] = 0
             team_games.loc[team_mask, "home_wind_speed"] = 0
+            # Write neutral weather cache for dome teams
+            cache_file = os.path.join(cache_dir, f"{team}_weather.csv")
+            pd.DataFrame({
+                "date": team_games_subset["date"],
+                "temperature": 21.1,
+                "precipitation": 0,
+                "wind_speed": 0
+            }).to_csv(cache_file, index=False)
             continue
 
         # Cache filename
@@ -108,6 +116,9 @@ def create_weather_features(team_games, cache_dir="data/weather_cache"):
             pd.merge(team_games_subset, weather, left_on="date", right_on="date", how="left")[
                 ["temperature", "precipitation", "wind_speed"]
             ].values
+    
+    team_games['home_temperature'] = pd.to_numeric(team_games['home_temperature'], errors='coerce')
+    team_games['home_wind_speed'] = pd.to_numeric(team_games['home_wind_speed'], errors='coerce')
         
     print("Weather features created.")
 

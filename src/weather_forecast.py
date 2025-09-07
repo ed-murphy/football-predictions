@@ -66,11 +66,12 @@ dome_teams = {
 def fetch_game_weather(home_team, kickoff_time, api_key):
     """Fetch weather for a single game or return dome defaults."""
     if home_team in dome_teams:
+        # Dome defaults: 21.1°C, 0 kph
         return {
             "home_team": home_team,
             "kickoff_time": kickoff_time,
-            "temperature_F": 70,
-            "wind_speed_mph": 0,
+            "temperature": 21.1,
+            "wind_speed": 0,
             "weather_status": "indoor/dome",
         }
 
@@ -94,11 +95,14 @@ def fetch_game_weather(home_team, kickoff_time, api_key):
             key=lambda f: abs(datetime.fromtimestamp(f["dt"], tz=timezone.utc) - kickoff_time)
         )
 
+        # Convert temperature from F to C, wind speed from mph to kph
+        temp_c = (closest["main"]["temp"] - 32) * 5.0 / 9.0
+        wind_kph = closest["wind"].get("speed", 0) * 1.60934
         return {
             "home_team": home_team,
             "kickoff_time": kickoff_time,
-            "temperature_F": closest["main"]["temp"],
-            "wind_speed_mph": closest["wind"].get("speed"),
+            "temperature": temp_c,
+            "wind_speed": wind_kph,
             "weather_status": closest["weather"][0]["description"],
         }
 
@@ -116,7 +120,11 @@ def get_forecasted_weather(upcoming_team_games: pd.DataFrame) -> pd.DataFrame:
     if os.path.exists(WEATHER_PATH):
         print(f"Reading cached weather forecast for upcoming games from {WEATHER_PATH}...")
         df = pd.read_csv(WEATHER_PATH, parse_dates=['kickoff_time'])
-        df['home_team'] = df['home_team'].map(TEAM_ABBREV)
+        # Ensure units are correct if reloading cached data
+        if "temperature_F" in df.columns:
+            df["temperature"] = (df["temperature_F"] - 32) * 5.0 / 9.0
+        if "wind_speed_mph" in df.columns:
+            df["wind_speed"] = df["wind_speed_mph"] * 1.60934
         return df
 
     upcoming_team_games = upcoming_team_games.copy()
@@ -129,9 +137,7 @@ def get_forecasted_weather(upcoming_team_games: pd.DataFrame) -> pd.DataFrame:
             weather_data.append(result)
 
     df = pd.DataFrame(weather_data)
-    df['home_team'] = df['home_team'].map(TEAM_ABBREV)
-
+    # No mapping needed, already abbreviations
     df.to_csv(WEATHER_PATH, index=False)
     print(f"Saved weather forecast for upcoming games to {WEATHER_PATH}")
-
     return df

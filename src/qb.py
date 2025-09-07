@@ -42,8 +42,15 @@ def create_qb_features(team_games, plays):
 
     qb_epa['rolling_avg_qb_epa'] = (
         qb_epa.groupby('qb_name')['qb_avg_epa']
-        .apply(lambda x: x.shift().rolling(window=5, min_periods=1).mean())
+        .apply(lambda x: x.shift().rolling(window=7, min_periods=1).mean())
         .reset_index(level=0, drop=True)
+    )
+
+    latest_qb_epa = (
+        qb_epa.sort_values(['qb_name', 'game_id'])
+        .groupby('qb_name')
+        .tail(1)[['qb_name', 'rolling_avg_qb_epa']]
+        .reset_index(drop=True)
     )
 
     team_games = team_games.merge(starting_qbs, on=['game_id', 'team'], how='left')
@@ -80,4 +87,4 @@ def create_qb_features(team_games, plays):
 
     print("QB EPA features created.")
 
-    return team_games
+    return team_games, latest_qb_epa

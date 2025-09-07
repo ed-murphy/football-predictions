@@ -5,15 +5,16 @@ def create_basic_features(games):
     
     # total points scored in each game
     games['total_points'] = games['home_score'] + games['away_score']
+    games['regular_season'] = (games['game_type'] == 'REG').astype(int)
 
     # create home team features
-    home = games[['game_id', 'week', 'season', 'home_team', 'home_score', 'away_score', 'total_line', 'total_points', 'gameday']].copy()
-    home.columns = ['game_id', 'week', 'season', 'team', 'points_for', 'points_against', 'total_line', 'total_points', 'date']
+    home = games[['game_id', 'week', 'season', 'home_team', 'home_score', 'away_score', 'total_line', 'total_points', 'gameday', 'div_game', 'regular_season']].copy()
+    home.columns = ['game_id', 'week', 'season', 'team', 'points_for', 'points_against', 'total_line', 'total_points', 'date', 'divisional', 'regular_season']
     home['is_home'] = 1
 
     # create away team features
-    away = games[['game_id', 'week', 'season', 'away_team', 'away_score', 'home_score', 'total_line', 'total_points', 'gameday']].copy()
-    away.columns = ['game_id', 'week', 'season', 'team', 'points_for', 'points_against', 'total_line', 'total_points', 'date']
+    away = games[['game_id', 'week', 'season', 'away_team', 'away_score', 'home_score', 'total_line', 'total_points', 'gameday', 'div_game', 'regular_season']].copy()
+    away.columns = ['game_id', 'week', 'season', 'team', 'points_for', 'points_against', 'total_line', 'total_points', 'date', 'divisional', 'regular_season']
     away['is_home'] = 0
 
     # combine home and away data frames
@@ -24,13 +25,13 @@ def create_basic_features(games):
     team_games['rolling_avg_points_for'] = (
         team_games.groupby(['team', 'season'])['points_for']
         .shift()
-        .rolling(window=5, min_periods=1)
+        .rolling(window=7, min_periods=1)
         .mean()
     )
     team_games['rolling_avg_points_against'] = (
         team_games.groupby(['team', 'season'])['points_against']
         .shift()
-        .rolling(window=5, min_periods=1)
+        .rolling(window=7, min_periods=1)
         .mean()
     )
 
