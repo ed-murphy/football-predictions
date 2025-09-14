@@ -42,10 +42,11 @@ def run_analysis():
     # Load weather forecasts
     weather_features = get_forecasted_weather(totals)
 
-    # Train model
+
+    # Train model for validation (holdout 2024)
     model, X_test, y_test, features, test_data = train_model(
         team_games = team_games,
-        model_path = "model/rf_total_points_model.joblib",
+        model_path = "model/rf_total_points_model_eval.joblib",
         train_seasons = [2021, 2022, 2023],
         test_seasons = [2024],
         random_state = 42
@@ -61,13 +62,22 @@ def run_analysis():
         precision_margin=2.5
     )
 
+    # Production workflow: retrain using all available data (2021-2024)
+    prod_model, _, _, _, _ = train_model(
+        team_games = team_games,
+        model_path = "model/rf_total_points_model_prod.joblib",
+        train_seasons = [2021, 2022, 2023, 2024, 2025],
+        test_seasons = [],  # No test set for production
+        random_state = 42
+    )
+
     # Prepare upcoming games with all features and predict
     upcoming_team_games = prepare_upcoming_team_games(
         totals,
         team_games,
         latest_qb_epa,
         weather_features,
-        model
+        prod_model
     )
 
     # Use model to generate predictions for upcoming games

@@ -3,6 +3,7 @@ import streamlit as st
 from datetime import datetime
 import os
 import re
+import numpy as np
 
 st.set_page_config(layout='wide')
 
@@ -52,25 +53,39 @@ selected_week = st.selectbox('Select Week', week_options)
 # Filter by selected week
 week_df = predictions[predictions['week'] == selected_week]
 
+
 # Sort and prepare display dataframe
 display_df = week_df.sort_values(['date', 'home_team']).copy()
 display_df['date'] = display_df['date'].dt.strftime("%b %d, %Y")
 display_df['predicted_total'] = display_df['predicted_total'].round(1)
+
+if 'actual_total' not in display_df.columns:
+    display_df['actual_total'] = np.nan
+else:
+    display_df['actual_total'] = display_df['actual_total'].replace('', np.nan).astype(float)
+
 display_df = display_df.rename(
     columns={
         "date": "Game Date",
         "home_team": "Home",
         "away_team": "Away",
-        "predicted_total": "Predicted Points"
+        "predicted_total": "Predicted Points",
+        "actual_total": "Actual Points"
     }
+)
+
+display_df['Actual Points'] = display_df['Actual Points'].apply(
+    lambda x: '' if pd.isnull(x) else int(x) if float(x).is_integer() else x
 )
 
 # Inject CSS for table formatting
 st.markdown(
     """
     <style>
-    .stDataFrame div[data-testid="stDataFrameContainer"] div[role="gridcell"] {
-        text-align: left;
+    .stDataFrame div[data-testid="stDataFrameContainer"] div[role="gridcell"],
+    .stDataFrame div[data-testid="stDataFrameContainer"] th {
+        text-align: center !important;
+        justify-content: center !important;
     }
     .stDataFrame div[data-testid="stDataFrameContainer"] {
         height: auto !important;
@@ -82,7 +97,7 @@ st.markdown(
 
 # Display dataframe
 st.dataframe(
-    display_df[["Game Date", "Home", "Away", "Predicted Points"]],
+    display_df[["Game Date", "Home", "Away", "Predicted Points", "Actual Points"]],
     use_container_width=True,
     hide_index=True
 )
