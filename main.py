@@ -15,6 +15,9 @@ from src.evaluate import evaluate_model
 
 def run_analysis():
 
+    # Load Vegas totals for upcoming games
+    totals = get_totals()
+
     # Load historical play-level and game-level data using nfl_data_py
     games, plays = load_data()
 
@@ -35,9 +38,6 @@ def run_analysis():
 
     # Add weather features
     team_games = create_weather_features(team_games)
-
-    # Load Vegas totals for upcoming games
-    totals = get_totals()
 
     # Load weather forecasts
     weather_features = get_forecasted_weather(totals)
