@@ -25,13 +25,13 @@ def create_basic_features(games):
     team_games['rolling_avg_points_for'] = (
         team_games.groupby(['team', 'season'])['points_for']
         .shift()
-        .rolling(window=7, min_periods=1)
+        .rolling(window=3, min_periods=1)
         .mean()
     )
     team_games['rolling_avg_points_against'] = (
         team_games.groupby(['team', 'season'])['points_against']
         .shift()
-        .rolling(window=7, min_periods=1)
+        .rolling(window=3, min_periods=1)
         .mean()
     )
 

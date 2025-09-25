@@ -31,7 +31,7 @@ def create_defense_features(team_games: pd.DataFrame, plays: pd.DataFrame) -> pd
     team_games['rolling_avg_def_epa'] = (
         team_games
         .groupby(['team', 'season'])['def_epa']
-        .apply(lambda x: x.shift().rolling(window=7, min_periods=1).mean())
+        .apply(lambda x: x.shift().rolling(window=3, min_periods=1).mean())
         .reset_index(level=[0,1], drop=True)
     )
 

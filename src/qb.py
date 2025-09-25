@@ -42,7 +42,7 @@ def create_qb_features(team_games, plays):
 
     qb_epa['rolling_avg_qb_epa'] = (
         qb_epa.groupby('qb_name')['qb_avg_epa']
-        .apply(lambda x: x.shift().rolling(window=7, min_periods=1).mean())
+        .apply(lambda x: x.shift().rolling(window=3, min_periods=1).mean())
         .reset_index(level=0, drop=True)
     )
 
