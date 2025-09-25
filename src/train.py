@@ -29,13 +29,6 @@ def train_model(
         Proxy for a "strong" scoring prediction relative to Vegas total, used for internal benchmarking.
     random_state : int
         Random seed for reproducibility.
-
-    Returns
-    -------
-    model : XGBRegressor
-        Trained model.
-    results : dict
-        Evaluation metrics and betting precision.
     """
 
     # Features for prediction
@@ -79,11 +72,13 @@ def train_model(
     features.append('home_qb_x_away_def')
     features.append('away_qb_x_home_def')
 
+    model_data['residual'] = model_data['total_points'] - model_data['total_line']
+
     # Train/test split
     train_data = model_data[model_data["season"].isin(train_seasons)]
     test_data = model_data[model_data["season"].isin(test_seasons)]
-    X_train, y_train = train_data[features], train_data["total_points"]
-    X_test, y_test = test_data[features], test_data["total_points"]
+    X_train, y_train = train_data[features], train_data["residual"]
+    X_test, y_test = test_data[features], test_data["residual"]
 
     # Fit model
     model = RandomForestRegressor(

@@ -149,6 +149,6 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
 
     # Predict totals
     feature_cols = list(feature_mapping.values()) + ['home_x_away_pace'] + ['home_pace_x_wind_speed'] + ['away_pace_x_wind_speed'] + ['home_qb_x_away_def'] + ['away_qb_x_home_def']
-    game_features['predicted_total'] = model.predict(game_features[feature_cols])
+    game_features['predicted_total'] = game_features['total_line'] + model.predict(game_features[feature_cols])
 
     return game_features
