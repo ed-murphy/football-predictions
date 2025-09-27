@@ -11,7 +11,7 @@ def save_predictions(upcoming_team_games: pd.DataFrame):
     """
 
     # Create simple data frame containing predictions
-    predictions = upcoming_team_games[['date', 'home_team', 'away_team', 'predicted_total']]
+    predictions = upcoming_team_games[['date', 'home_team', 'away_team', 'total_line', 'predicted_total']]
 
     # Remove duplicate columns if any
     predictions = predictions.loc[:, ~predictions.columns.duplicated()]

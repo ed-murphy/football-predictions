@@ -64,13 +64,19 @@ if 'actual_total' not in display_df.columns:
 else:
     display_df['actual_total'] = display_df['actual_total'].replace('', np.nan).astype(float)
 
+
+# Add DraftKings total (total_line) to display
+if 'total_line' in display_df.columns:
+    display_df['total_line'] = display_df['total_line'].round(1)
+
 display_df = display_df.rename(
     columns={
         "date": "Game Date",
         "home_team": "Home",
         "away_team": "Away",
         "predicted_total": "Predicted Points",
-        "actual_total": "Actual Points"
+        "actual_total": "Actual Points",
+        "total_line": "DraftKings Total"
     }
 )
 
@@ -97,7 +103,7 @@ st.markdown(
 
 # Display dataframe
 st.dataframe(
-    display_df[["Game Date", "Home", "Away", "Predicted Points", "Actual Points"]],
+    display_df[["Game Date", "Home", "Away", "DraftKings Total", "Predicted Points", "Actual Points"]],
     use_container_width=True,
     hide_index=True
 )

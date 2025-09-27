@@ -25,8 +25,6 @@ def train_model(
         Seasons used for training.
     test_seasons : list[int]
         Seasons used for testing.
-    inspection_margin : float
-        Proxy for a "strong" scoring prediction relative to Vegas total, used for internal benchmarking.
     random_state : int
         Random seed for reproducibility.
     """
@@ -53,24 +51,30 @@ def train_model(
         "both_short_rest"
     ]
 
-    # Keep one row per game (home team)
-    model_data = (
-        team_games
-        .dropna(subset=features + ["total_points"])
-        .loc[lambda df: df["is_home"] == 1, ["game_id", "season", "week", "total_points"] + features]
-    )
+   # Keep one row per game (home team)
+    model_data = team_games.loc[
+        team_games["is_home"] == 1,
+        ["game_id", "season", "week", "total_points"] + features
+    ].copy()
 
+    # Compute interaction features BEFORE dropping NaNs
     model_data['home_x_away_pace'] = model_data['home_rolling_avg_off_pace'] * model_data['away_rolling_avg_off_pace']
     model_data['home_pace_x_wind_speed'] = model_data['home_rolling_avg_off_pace'] * model_data['home_wind_speed']
     model_data['away_pace_x_wind_speed'] = model_data['away_rolling_avg_off_pace'] * model_data['home_wind_speed']
     model_data['home_qb_x_away_def'] = model_data['home_rolling_avg_qb_epa'] * model_data['away_rolling_avg_def_epa']
     model_data['away_qb_x_home_def'] = model_data['away_rolling_avg_qb_epa'] * model_data['home_rolling_avg_def_epa']
 
-    features.append('home_x_away_pace')
-    features.append('home_pace_x_wind_speed')
-    features.append('away_pace_x_wind_speed')
-    features.append('home_qb_x_away_def')
-    features.append('away_qb_x_home_def')
+    # Update features list to include interactions
+    features += [
+        'home_x_away_pace',
+        'home_pace_x_wind_speed',
+        'away_pace_x_wind_speed',
+        'home_qb_x_away_def',
+        'away_qb_x_home_def'
+    ]
+
+    # Now drop any rows with NaNs in any feature or target
+    model_data = model_data.dropna(subset=features + ["total_points"])
 
     model_data['residual'] = model_data['total_points'] - model_data['total_line']
 
