@@ -6,15 +6,16 @@ def create_basic_features(games):
     # total points scored in each game
     games['total_points'] = games['home_score'] + games['away_score']
     games['regular_season'] = (games['game_type'] == 'REG').astype(int)
+    games['is_dome'] = games['roof'].str.lower().isin(['dome', 'closed']).astype(int)
 
     # create home team features
-    home = games[['game_id', 'week', 'season', 'home_team', 'home_score', 'away_score', 'total_line', 'total_points', 'gameday', 'div_game', 'regular_season']].copy()
-    home.columns = ['game_id', 'week', 'season', 'team', 'points_for', 'points_against', 'total_line', 'total_points', 'date', 'divisional', 'regular_season']
+    home = games[['game_id', 'week', 'season', 'home_team', 'home_score', 'away_score', 'total_line', 'total_points', 'gameday', 'div_game', 'regular_season', 'is_dome']].copy()
+    home.columns = ['game_id', 'week', 'season', 'team', 'points_for', 'points_against', 'total_line', 'total_points', 'date', 'divisional', 'regular_season', 'is_dome']
     home['is_home'] = 1
 
     # create away team features
-    away = games[['game_id', 'week', 'season', 'away_team', 'away_score', 'home_score', 'total_line', 'total_points', 'gameday', 'div_game', 'regular_season']].copy()
-    away.columns = ['game_id', 'week', 'season', 'team', 'points_for', 'points_against', 'total_line', 'total_points', 'date', 'divisional', 'regular_season']
+    away = games[['game_id', 'week', 'season', 'away_team', 'away_score', 'home_score', 'total_line', 'total_points', 'gameday', 'div_game', 'regular_season', 'is_dome']].copy()
+    away.columns = ['game_id', 'week', 'season', 'team', 'points_for', 'points_against', 'total_line', 'total_points', 'date', 'divisional', 'regular_season', 'is_dome']
     away['is_home'] = 0
 
     # combine home and away data frames

@@ -55,12 +55,6 @@ def create_weather_features(team_games, cache_dir="data/weather_cache"):
         "WAS": {"lat": 38.9076, "lon": -77.0209}
     }
 
-    # Dome teams
-    dome_teams = {
-        "ARI", "ATL", "DAL", "DET", "HOU",
-        "IND", "LV", "LAC", "LA", "MIN", "NO"
-    }
-
     # Initialize weather columns
     for col in ["temperature", "precipitation", "wind_speed"]:
         team_games[f"home_{col}"] = None
@@ -75,7 +69,7 @@ def create_weather_features(team_games, cache_dir="data/weather_cache"):
         team_games_subset = team_games.loc[team_mask]
 
         # Skip dome teams (set neutral weather)
-        if team in dome_teams:
+        if team_games.loc[team_mask, 'is_dome'].any():
             team_games.loc[team_mask, "home_temperature"] = 21.1
             team_games.loc[team_mask, "home_precipitation"] = 0
             team_games.loc[team_mask, "home_wind_speed"] = 0
