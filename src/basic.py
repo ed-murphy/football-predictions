@@ -2,20 +2,24 @@ import pandas as pd
 
 def create_basic_features(games):
     """Create team-game level features from games and play-by-play data."""
+
+    international_stadiums = ['LON02', 'LON00', 'GER00', 'MEX00', 'FRA00']
+    games['international'] = games['stadium_id'].isin(international_stadiums).astype(int)
     
     # total points scored in each game
     games['total_points'] = games['home_score'] + games['away_score']
+
     games['regular_season'] = (games['game_type'] == 'REG').astype(int)
     games['is_dome'] = games['roof'].str.lower().isin(['dome', 'closed']).astype(int)
 
     # create home team features
-    home = games[['game_id', 'week', 'season', 'home_team', 'home_score', 'away_score', 'total_line', 'total_points', 'gameday', 'div_game', 'regular_season', 'is_dome']].copy()
-    home.columns = ['game_id', 'week', 'season', 'team', 'points_for', 'points_against', 'total_line', 'total_points', 'date', 'divisional', 'regular_season', 'is_dome']
+    home = games[['game_id', 'week', 'season', 'home_team', 'home_score', 'away_score', 'total_line', 'total_points', 'gameday', 'div_game', 'regular_season', 'is_dome', 'international']].copy()
+    home.columns = ['game_id', 'week', 'season', 'team', 'points_for', 'points_against', 'total_line', 'total_points', 'date', 'divisional', 'regular_season', 'is_dome', 'international']
     home['is_home'] = 1
 
     # create away team features
-    away = games[['game_id', 'week', 'season', 'away_team', 'away_score', 'home_score', 'total_line', 'total_points', 'gameday', 'div_game', 'regular_season', 'is_dome']].copy()
-    away.columns = ['game_id', 'week', 'season', 'team', 'points_for', 'points_against', 'total_line', 'total_points', 'date', 'divisional', 'regular_season', 'is_dome']
+    away = games[['game_id', 'week', 'season', 'away_team', 'away_score', 'home_score', 'total_line', 'total_points', 'gameday', 'div_game', 'regular_season', 'is_dome', 'international']].copy()
+    away.columns = ['game_id', 'week', 'season', 'team', 'points_for', 'points_against', 'total_line', 'total_points', 'date', 'divisional', 'regular_season', 'is_dome', 'international']
     away['is_home'] = 0
 
     # combine home and away data frames

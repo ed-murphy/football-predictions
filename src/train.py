@@ -46,9 +46,12 @@ def train_model(
         "away_rolling_avg_off_pace",
         "divisional",
         "regular_season",
+        "international",
         "home_short_rest",
         "away_short_rest",
-        "both_short_rest"
+        "both_short_rest",
+        "home_rolling_rz_eff",
+        "away_rolling_rz_eff"
     ]
 
    # Keep one row per game (home team)

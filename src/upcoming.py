@@ -67,11 +67,11 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
     upcoming_games['both_short_rest'] = ((upcoming_games['home_short_rest'] == 1) & (upcoming_games['away_short_rest'] == 1)).astype(int)
 
     # Create home/away DataFrames, now including rest features
-    home = upcoming_games[['commence_time', 'home_team', 'away_team', 'total_line', 'home_rolling_avg_qb_epa', 'divisional', 'regular_season', 'home_short_rest', 'away_short_rest', 'both_short_rest']].copy()
+    home = upcoming_games[['commence_time', 'home_team', 'away_team', 'total_line', 'home_rolling_avg_qb_epa', 'divisional', 'regular_season', 'international', 'home_short_rest', 'away_short_rest', 'both_short_rest']].copy()
     home.rename(columns={'home_team':'team', 'away_team':'opponent', 'commence_time':'date'}, inplace=True)
     home['is_home'] = 1
 
-    away = upcoming_games[['commence_time', 'away_team', 'home_team', 'total_line', 'away_rolling_avg_qb_epa', 'divisional', 'regular_season', 'home_short_rest', 'away_short_rest', 'both_short_rest']].copy()
+    away = upcoming_games[['commence_time', 'away_team', 'home_team', 'total_line', 'away_rolling_avg_qb_epa', 'divisional', 'regular_season', 'international', 'home_short_rest', 'away_short_rest', 'both_short_rest']].copy()
     away.rename(columns={'away_team':'team', 'home_team':'opponent', 'commence_time':'date'}, inplace=True)
     away['is_home'] = 0
 
@@ -83,7 +83,7 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
     # Merge rolling averages not already handled above
     rolling_features = [
         'rolling_avg_points_for', 'rolling_avg_points_against',
-        'rolling_avg_def_epa', 'rolling_avg_off_pace'
+        'rolling_avg_def_epa', 'rolling_avg_off_pace', 'rolling_rz_eff'
     ]
     for feat in rolling_features:
         last_vals = team_games_hist.groupby('team')[feat].last().reset_index()
@@ -111,11 +111,21 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
     )
 
     # Cleanup
-    game_features.rename(columns={'team_home': 'home_team', 'team_away': 'away_team', 'total_line_home': 'total_line',
-                                  'divisional_home': 'divisional', 'regular_season_home': 'regular_season', 'home_short_rest_home': 'home_short_rest',
-                                  'away_short_rest_home': 'away_short_rest', 'both_short_rest_home': 'both_short_rest'}, inplace=True)
-    game_features.drop(columns=['opponent_home','opponent_away', 'total_line_away', 'divisional_away', 'regular_season_away',
-                                'home_short_rest_away', 'away_short_rest_away', 'both_short_rest_away'], inplace=True)
+    game_features.rename(columns={
+        'team_home': 'home_team',
+        'team_away': 'away_team',
+        'total_line_home': 'total_line',
+        'divisional_home': 'divisional',
+        'regular_season_home': 'regular_season',
+        'international_home': 'international',
+        'home_short_rest_home': 'home_short_rest',
+        'away_short_rest_home': 'away_short_rest',
+        'both_short_rest_home': 'both_short_rest'
+    }, inplace=True)
+    game_features.drop(columns=[
+        'opponent_home','opponent_away', 'total_line_away', 'divisional_away', 'regular_season_away', 'international_away', 
+        'home_short_rest_away', 'away_short_rest_away', 'both_short_rest_away'
+    ], inplace=True)
 
     # Rename columns to match model expectations
     feature_mapping = {
@@ -134,9 +144,13 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
         'rolling_avg_off_pace_pre_game_away': 'away_rolling_avg_off_pace',
         'divisional': 'divisional',
         'regular_season': 'regular_season',
+        'international' : 'international',
         'home_short_rest': 'home_short_rest',
         'away_short_rest': 'away_short_rest',
-        'both_short_rest': 'both_short_rest'
+        'both_short_rest': 'both_short_rest',
+        'rolling_rz_eff_pre_game_home' : 'home_rolling_rz_eff',
+        'rolling_rz_eff_pre_game_away' : 'away_rolling_rz_eff'
+
     }
     game_features = game_features.rename(columns=feature_mapping)
 

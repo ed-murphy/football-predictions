@@ -68,30 +68,16 @@ def create_weather_features(team_games, cache_dir="data/weather_cache"):
         team_mask = (team_games["team"] == team) & (team_games["is_home"] == 1)
         team_games_subset = team_games.loc[team_mask]
 
-        # Skip dome teams (set neutral weather)
-        if team_games.loc[team_mask, 'is_dome'].any():
-            team_games.loc[team_mask, "home_temperature"] = 21.1
-            team_games.loc[team_mask, "home_precipitation"] = 0
-            team_games.loc[team_mask, "home_wind_speed"] = 0
-            # Write neutral weather cache for dome teams
-            cache_file = os.path.join(cache_dir, f"{team}_weather.csv")
-            pd.DataFrame({
-                "date": team_games_subset["date"],
-                "temperature": 21.1,
-                "precipitation": 0,
-                "wind_speed": 0
-            }).to_csv(cache_file, index=False)
+        if team_games_subset.empty:
             continue
 
-        # Cache filename
         cache_file = os.path.join(cache_dir, f"{team}_weather.csv")
 
         if os.path.exists(cache_file):
             weather = pd.read_csv(cache_file, parse_dates=["date"])
         else:
             # Build Meteostat Point
-            point = Point(float(lat), float(lon))
-
+            point = Point(lat, lon)
             start = team_games_subset['date'].min()
             end = team_games_subset['date'].max()
 
@@ -104,16 +90,24 @@ def create_weather_features(team_games, cache_dir="data/weather_cache"):
             weather.to_csv(cache_file, index=False)
 
         weather['date'] = pd.to_datetime(weather['date'])
-        
-        # Merge onto games
-        team_games.loc[team_mask, ["home_temperature", "home_precipitation", "home_wind_speed"]] = \
-            pd.merge(team_games_subset, weather, left_on="date", right_on="date", how="left")[
-                ["temperature", "precipitation", "wind_speed"]
-            ].values
-    
+
+        # Assign weather **per game**
+        for idx, row in team_games_subset.iterrows():
+            if row['is_dome']:
+                # Neutral dome values
+                team_games.at[idx, "home_temperature"] = 21.1
+                team_games.at[idx, "home_precipitation"] = 0
+                team_games.at[idx, "home_wind_speed"] = 0
+            else:
+                # Merge actual weather for that date
+                match = weather[weather['date'] == row['date']]
+                if not match.empty:
+                    team_games.at[idx, "home_temperature"] = match["temperature"].values[0]
+                    team_games.at[idx, "home_precipitation"] = match["precipitation"].values[0]
+                    team_games.at[idx, "home_wind_speed"] = match["wind_speed"].values[0]
+
     team_games['home_temperature'] = pd.to_numeric(team_games['home_temperature'], errors='coerce')
     team_games['home_wind_speed'] = pd.to_numeric(team_games['home_wind_speed'], errors='coerce')
-        
-    print("Weather features created.")
 
+    print("Weather features created.")
     return team_games

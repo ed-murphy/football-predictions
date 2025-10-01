@@ -11,6 +11,7 @@ from src.upcoming import prepare_upcoming_team_games
 from src.predictions import save_predictions
 from src.rest import create_rest_features
 from src.evaluate import evaluate_model
+from src.redzone import create_red_zone
 
 
 def run_analysis():
@@ -36,18 +37,20 @@ def run_analysis():
     # Add rest features
     team_games = create_rest_features(team_games)
 
+    # Add red zone efficiency feature
+    team_games = create_red_zone(team_games, plays)
+
     # Add weather features
     team_games = create_weather_features(team_games)
 
     # Load weather forecasts
     weather_features = get_forecasted_weather(totals)
 
-
     # Train model for validation (holdout 2024)
     model, X_test, y_test, features, test_data = train_model(
         team_games = team_games,
         model_path = "model/rf_total_points_model_eval.joblib",
-        train_seasons = [2021, 2022, 2023],
+        train_seasons = [2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023],
         test_seasons = [2024],
         random_state = 42
     )
@@ -59,14 +62,14 @@ def run_analysis():
         y_test,
         features,
         test_data,
-        precision_margin=4
+        precision_margin=2.5
     )
 
     # Production workflow: retrain using all available data (2021-2024)
     prod_model, _, _, _, _ = train_model(
         team_games = team_games,
         model_path = "model/rf_total_points_model_prod.joblib",
-        train_seasons = [2021, 2022, 2023, 2024, 2025],
+        train_seasons = [2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025],
         test_seasons = [],  # No test set for production
         random_state = 42
     )
