@@ -62,7 +62,7 @@ def run_analysis():
         y_test,
         features,
         test_data,
-        precision_margin=2.5
+        precision_margin=4
     )
 
     # Production workflow: retrain using all available data (2021-2024)
