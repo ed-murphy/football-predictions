@@ -4,6 +4,8 @@ from datetime import datetime
 import os
 import re
 import numpy as np
+import matplotlib.pyplot as plt
+import io
 
 st.set_page_config(layout='wide')
 
@@ -21,104 +23,289 @@ st.markdown(
 
 st.title("NFL Scoring Predictions")
 
-pred_dir = "predictions"
-csv_files = [f for f in os.listdir(pred_dir) if f.endswith('.csv')]
-if not csv_files:
-    raise FileNotFoundError("No predictions files found.")
+tab1, tab2, tab3 = st.tabs(['Predictions', 'About', 'Performance'])
 
-# Get latest CSV file
-latest_csv = max(csv_files, key=lambda x: os.path.getmtime(os.path.join(pred_dir, x)))
-latest_path = os.path.join(pred_dir, latest_csv)
-predictions = pd.read_csv(latest_path)
+with tab1:
+    pred_dir = "predictions"
+    csv_files = [f for f in os.listdir(pred_dir) if f.endswith('.csv')]
+    if not csv_files:
+        raise FileNotFoundError("No predictions files found.")
 
-# --- Extract date from filename (handles optional _v1, _v2, etc.) ---
-match = re.search(r'_(\d{8})', latest_csv)
-if match:
-    file_date_str = match.group(1)  # e.g., '20250905'
-    file_date = datetime.strptime(file_date_str, "%Y%m%d")
-    formatted_date = file_date.strftime("%#m/%#d/%y")  # e.g., '9/5/25' on Windows
-    st.markdown(f"<p style='color:red; font-weight:bold;'>Predictions last updated on {formatted_date}</p>", unsafe_allow_html=True)
-else:
-    st.warning("Could not parse update date from filename.")
+    # Get latest CSV file
+    latest_csv = max(csv_files, key=lambda x: os.path.getmtime(os.path.join(pred_dir, x)))
+    latest_path = os.path.join(pred_dir, latest_csv)
+    predictions = pd.read_csv(latest_path)
 
-# Compute NFL week
-start_date = datetime(2025, 9, 4)  # Season start
-predictions['date'] = pd.to_datetime(predictions['date'])
-predictions['week'] = ((predictions['date'] - start_date).dt.days // 7 + 1).clip(lower=1)
+    # --- Extract date from filename (handles optional _v1, _v2, etc.) ---
+    match = re.search(r'_(\d{8})', latest_csv)
+    if match:
+        file_date_str = match.group(1)  # e.g., '20250905'
+        file_date = datetime.strptime(file_date_str, "%Y%m%d")
+        formatted_date = file_date.strftime("%#m/%#d/%y")  # e.g., '9/5/25' on Windows
+        st.markdown(f"<p style='color:red; font-weight:bold;'>Predictions last updated on {formatted_date}</p>", unsafe_allow_html=True)
+    else:
+        st.warning("Could not parse update date from filename.")
 
-# Dropdown to select week
-week_options = sorted(predictions['week'].unique())
-selected_week = st.selectbox('Select Week', week_options)
+    # Compute NFL week
+    start_date = datetime(2025, 9, 4)  # Season start
+    predictions['date'] = pd.to_datetime(predictions['date'])
+    predictions['week'] = ((predictions['date'] - start_date).dt.days // 7 + 1).clip(lower=1)
 
-# Filter by selected week
-week_df = predictions[predictions['week'] == selected_week]
+    # Figure out current week based on today's date
+    today = datetime.today()
+    current_week = max(1, ((today - start_date).days // 7 + 1))
+
+    # Dropdown to select week
+    week_options = sorted(predictions['week'].unique())
+    default_index = week_options.index(current_week) if current_week in week_options else 0
+    selected_week = st.selectbox('Select Week', week_options, index=default_index)
+
+    # Filter by selected week
+    week_df = predictions[predictions['week'] == selected_week]
+
+    # Sort and prepare display dataframe
+    display_df = week_df.sort_values(['date', 'home_team']).copy()
+    display_df['date'] = display_df['date'].dt.strftime("%b %d, %Y")
+    display_df['predicted_total'] = display_df['predicted_total'].round(1)
+
+    if 'actual_total' not in display_df.columns:
+        display_df['actual_total'] = np.nan
+    else:
+        display_df['actual_total'] = display_df['actual_total'].replace('', np.nan).astype(float)
 
 
-# Sort and prepare display dataframe
-display_df = week_df.sort_values(['date', 'home_team']).copy()
-display_df['date'] = display_df['date'].dt.strftime("%b %d, %Y")
-display_df['predicted_total'] = display_df['predicted_total'].round(1)
+    # Add DraftKings total (total_line) to display
+    if 'total_line' in display_df.columns:
+        display_df['total_line'] = display_df['total_line'].round(1)
 
-if 'actual_total' not in display_df.columns:
-    display_df['actual_total'] = np.nan
-else:
-    display_df['actual_total'] = display_df['actual_total'].replace('', np.nan).astype(float)
+    display_df = display_df.rename(
+        columns={
+            "date": "Game Date",
+            "home_team": "Home",
+            "away_team": "Away",
+            "predicted_total": "Predicted Points",
+            "actual_total": "Actual Points",
+            "total_line": "DraftKings Total"
+        }
+    )
 
+    display_df['Actual Points'] = display_df['Actual Points'].apply(
+        lambda x: '' if pd.isnull(x) else int(x) if float(x).is_integer() else x
+    )
 
-# Add DraftKings total (total_line) to display
-if 'total_line' in display_df.columns:
-    display_df['total_line'] = display_df['total_line'].round(1)
+    # Inject CSS for table formatting
+    st.markdown(
+        """
+        <style>
+        .stDataFrame div[data-testid="stDataFrameContainer"] div[role="gridcell"],
+        .stDataFrame div[data-testid="stDataFrameContainer"] th {
+            text-align: center !important;
+            justify-content: center !important;
+        }
+        .stDataFrame div[data-testid="stDataFrameContainer"] {
+            height: auto !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
-display_df = display_df.rename(
-    columns={
-        "date": "Game Date",
-        "home_team": "Home",
-        "away_team": "Away",
-        "predicted_total": "Predicted Points",
-        "actual_total": "Actual Points",
-        "total_line": "DraftKings Total"
-    }
-)
+    # Display dataframe
+    st.dataframe(
+        display_df[["Game Date", "Home", "Away", "DraftKings Total", "Predicted Points", "Actual Points"]],
+        use_container_width=True,
+        hide_index=True
+    )
 
-display_df['Actual Points'] = display_df['Actual Points'].apply(
-    lambda x: '' if pd.isnull(x) else int(x) if float(x).is_integer() else x
-)
+    # Disclaimer
+    st.markdown(
+        """
+        <p style='font-size:12px; color:gray;'>
+        ⚠️ Disclaimer: <br>
+        This site is not a source of betting advice.<br>
+        It is intended as a coding/statistics portfolio project and monitored for entertainment purposes.<br>
+        Predictions may be inaccurate, outdated, or completely wrong.<br>
+        Do not use this information for placing bets.<br>
+        View the code on <a href='https://github.com/ed-murphy/football-predictions' target='_blank'>GitHub</a>.
+        </p>
+        """,
+        unsafe_allow_html=True
+    )
 
-# Inject CSS for table formatting
-st.markdown(
-    """
-    <style>
-    .stDataFrame div[data-testid="stDataFrameContainer"] div[role="gridcell"],
-    .stDataFrame div[data-testid="stDataFrameContainer"] th {
-        text-align: center !important;
-        justify-content: center !important;
-    }
-    .stDataFrame div[data-testid="stDataFrameContainer"] {
-        height: auto !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+with tab2:
+    st.markdown(
+        """
+        This app shows predictions for the total amount of points scored in every NFL game.
 
-# Display dataframe
-st.dataframe(
-    display_df[["Game Date", "Home", "Away", "DraftKings Total", "Predicted Points", "Actual Points"]],
-    use_container_width=True,
-    hide_index=True
-)
+        The predictions are generated by a statistical model that is trained on data for every NFL snap since the beginning of the 2014 season.
 
-# Disclaimer
-st.markdown(
-    """
-    <p style='font-size:12px; color:gray;'>
-    ⚠️ Disclaimer: <br>
-    This site is not a source of betting advice.<br>
-    It is intended as a coding/statistics portfolio project and monitored for entertainment purposes.<br>
-    Predictions may be inaccurate, outdated, or completely wrong.<br>
-    Do not use this information for placing bets.<br>
-    View the code on <a href='https://github.com/ed-murphy/football-predictions' target='_blank'>GitHub</a>.
-    </p>
-    """,
-    unsafe_allow_html=True
-)
+        The variables that are currently used to train the model are:
+        - The current over/under from the betting market
+        - Recent points scored by both teams
+        - Recent points allowed by both teams
+        - Recent EPA of both starting QBs
+        - Recent EPA of both team defenses
+        - The temperature at kickoff
+        - The wind speed at kickoff
+        - Recent pace of both team offenses
+        - Whether the game is a divisional matchup
+        - Whether the game is regular season or playoffs
+        - Whether the game is played in the U.S. or abroad
+        - Whether one or both teams are playing on short rest (i.e. Thursday game after a Sunday game)
+        - Recent red zone efficiency for both teams
+        
+        After the model is trained on historical data for those variables, it is used to make predictions for upcoming NFL games based on those same characteristics.
+        
+        For example, it will predict the total points scored in an upcoming game based on the latest weather forecast and recent (past 3 games) stats for red zone efficiency, QB EPA, etc.
+
+        When the model is trained on 2014-2023 data, used to predict 2024 games, and then compared to known 2024 game results, it picks the over/under correctly 70% of the time when its scoring prediction is 4+ points different than the betting market's over/under.
+
+        In other words, this model's ability to predict the over/under is better when its prediction is further from the prevailing over/under in the betting market.
+        
+        ---
+        For more details, check out the source code on [GitHub](https://github.com/ed-murphy/football-predictions).
+        """
+    )
+
+with tab3:
+    perf_df = predictions.copy()
+    
+    # Ensure numeric columns
+    if 'actual_total' in perf_df.columns:
+        perf_df = perf_df.replace('', np.nan)
+        perf_df['actual_total'] = pd.to_numeric(perf_df['actual_total'], errors='coerce')
+        perf_df['predicted_total'] = pd.to_numeric(perf_df['predicted_total'], errors='coerce')
+        if 'total_line' in perf_df.columns:
+            perf_df['total_line'] = pd.to_numeric(perf_df['total_line'], errors='coerce')
+
+        perf_df = perf_df.dropna(subset=['actual_total', 'predicted_total'])
+
+        if perf_df.empty:
+            st.info("No completed games available yet to evaluate performance.")
+        else:
+            import io
+            import matplotlib.pyplot as plt
+
+            # ---------------- Helper function ----------------
+            def quadrant_label(row):
+                if 'total_line' not in row or pd.isna(row['total_line']):
+                    return None
+                pred = row['predicted_total']
+                actual = row['actual_total']
+                market = row['total_line']
+                if actual > market:
+                    return 'Predicted Over, was Correct' if pred > market else 'Predicted Over, was Incorrect'
+                elif actual < market:
+                    return 'Predicted Under, was Correct' if pred < market else 'Predicted Under, was Incorrect'
+
+            perf_df['quadrant'] = perf_df.apply(quadrant_label, axis=1)
+            perf_df = perf_df.dropna(subset=['quadrant'])
+
+            mn = min(perf_df['predicted_total'].min(), perf_df['actual_total'].min())
+            mx = max(perf_df['predicted_total'].max(), perf_df['actual_total'].max())
+            padding = (mx - mn) * 0.05
+
+            # ---------------- Section 1: All Games ----------------
+            st.header("All NFL Games So Far This Season")
+
+            st.markdown(
+                """
+                The first two plots illustrate the model's performance for every NFL game played so far this season.
+                """
+            )
+
+            # Scatter plot
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.scatter(perf_df['predicted_total'], perf_df['actual_total'], alpha=0.6, s=30)
+            ax.set_xlim(mn - padding, mx + padding)
+            ax.set_ylim(mn - padding, mx + padding)
+            ax.plot([mn, mx], [mn, mx], '--', color='red', label='Perfect prediction')
+            ax.set_xlabel("Predicted Total Points")
+            ax.set_ylabel("Actual Total Points")
+            ax.set_title("Model's Predicted Points vs. Actual Points Scored")
+            ax.legend()
+            plt.tight_layout()
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', bbox_inches='tight')
+            buf.seek(0)
+            plt.close(fig)
+            st.image(buf.getvalue(), width=600)
+
+            # Bar plot with split labels
+            labels = [
+                "Predicted Over,\nwas Correct",
+                "Predicted Under,\nwas Correct",
+                "Predicted Over,\nwas Incorrect",
+                "Predicted Under,\nwas Incorrect"
+            ]
+            counts = perf_df['quadrant'].value_counts().reindex([
+                'Predicted Over, was Correct',
+                'Predicted Under, was Correct',
+                'Predicted Over, was Incorrect',
+                'Predicted Under, was Incorrect'
+            ], fill_value=0)
+
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.bar(labels, counts.values, color=['green','blue','red','orange'])
+            ax.set_ylabel("Number of Games")
+            ax.set_title("Model's Ability to Predict Over/Under")
+            plt.xticks(rotation=0)
+            plt.tight_layout()
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', bbox_inches='tight')
+            buf.seek(0)
+            plt.close(fig)
+            st.image(buf.getvalue(), width=600)
+
+            # ---------------- Section 2: Games 4+ Points Different ----------------
+            diff_df = perf_df.copy()
+            diff_df['diff'] = (diff_df['predicted_total'] - diff_df['total_line']).abs()
+            diff_df = diff_df[diff_df['diff'] >= 4]
+
+            if diff_df.empty:
+                st.info("No games where model prediction differs from market by 4+ points.")
+            else:
+                st.header("NFL Games So Far This Season Where Model Prediction and Betting Market Differed by 4+ Points")
+
+                st.markdown(
+                    """
+                    The second set of plots show the model's performance for NFL games in which the model prediction of total points was 4+ points different from the betting market's over/under.
+                    """
+                )
+
+                # Scatter plot
+                fig, ax = plt.subplots(figsize=(6, 4))
+                ax.scatter(diff_df['predicted_total'], diff_df['actual_total'], alpha=0.6, s=30)
+                ax.set_xlim(mn - padding, mx + padding)
+                ax.set_ylim(mn - padding, mx + padding)
+                ax.plot([mn, mx], [mn, mx], '--', color='red', label='Perfect prediction')
+                ax.set_xlabel("Predicted Total Points")
+                ax.set_ylabel("Actual Total Points")
+                ax.set_title("Model's Predicted Points vs. Actual Points Scored")
+                ax.legend()
+                plt.tight_layout()
+                buf = io.BytesIO()
+                fig.savefig(buf, format='png', bbox_inches='tight')
+                buf.seek(0)
+                plt.close(fig)
+                st.image(buf.getvalue(), width=600)
+
+                # Bar plot with split labels
+                counts_diff = diff_df['quadrant'].value_counts().reindex([
+                    'Predicted Over, was Correct',
+                    'Predicted Under, was Correct',
+                    'Predicted Over, was Incorrect',
+                    'Predicted Under, was Incorrect'
+                ], fill_value=0)
+
+                fig, ax = plt.subplots(figsize=(6, 4))
+                ax.bar(labels, counts_diff.values, color=['green','blue','red','orange'])
+                ax.set_ylabel("Number of Games")
+                ax.set_title("Model's Ability to Predict Over/Under")
+                plt.xticks(rotation=0)
+                plt.tight_layout()
+                buf = io.BytesIO()
+                fig.savefig(buf, format='png', bbox_inches='tight')
+                buf.seek(0)
+                plt.close(fig)
+                st.image(buf.getvalue(), width=600)
