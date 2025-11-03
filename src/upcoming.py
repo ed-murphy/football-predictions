@@ -3,6 +3,7 @@ import pandas as pd
 def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, weather_features, model):
     """
     Build one row per upcoming game with home/away features and forecasted weather.
+    All datetime columns are tz-naive to prevent comparison errors.
     """
     # Mapping full team names -> 3-letter codes
     TEAM_ABBREV = {
@@ -18,11 +19,12 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
         "Seattle Seahawks": "SEA", "San Francisco 49ers": "SF", "Tampa Bay Buccaneers": "TB",
         "Tennessee Titans": "TEN", "Washington Commanders": "WAS"
     }
+
     upcoming_games = upcoming_games.copy()
     upcoming_games['home_team'] = upcoming_games['home_team'].map(TEAM_ABBREV)
     upcoming_games['away_team'] = upcoming_games['away_team'].map(TEAM_ABBREV)
 
-    # adding divisional matchup flag
+    # Divisional matchups
     DIVISION_MAP = {
         'ARI': 'NFC West', 'ATL': 'NFC South', 'BAL': 'AFC North', 'BUF': 'AFC East',
         'CAR': 'NFC South', 'CHI': 'NFC North', 'CIN': 'AFC North', 'CLE': 'AFC North',
@@ -37,50 +39,54 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
     upcoming_games['away_division'] = upcoming_games['away_team'].map(DIVISION_MAP)
     upcoming_games['divisional'] = (upcoming_games['home_division'] == upcoming_games['away_division']).astype(int)
 
-    # merge in rolling QB EPA for expected home starters
+    # Merge rolling QB EPA
     upcoming_games = upcoming_games.merge(
         latest_qb_epa[['qb_name', 'rolling_avg_qb_epa']],
-        left_on=['home_starting_qb'],
-        right_on=['qb_name'],
+        left_on='home_starting_qb',
+        right_on='qb_name',
         how='left'
-    )
-    upcoming_games.rename(columns={'rolling_avg_qb_epa': 'home_rolling_avg_qb_epa'}, inplace=True)
-
-    # merge in rolling QB EPA for expected away starters
+    ).rename(columns={'rolling_avg_qb_epa': 'home_rolling_avg_qb_epa'})
     upcoming_games = upcoming_games.merge(
         latest_qb_epa[['qb_name', 'rolling_avg_qb_epa']],
-        left_on=['away_starting_qb'],
-        right_on=['qb_name'],
+        left_on='away_starting_qb',
+        right_on='qb_name',
         how='left'
-    )
-    upcoming_games.rename(columns={'rolling_avg_qb_epa': 'away_rolling_avg_qb_epa'}, inplace=True)
+    ).rename(columns={'rolling_avg_qb_epa': 'away_rolling_avg_qb_epa'})
+    upcoming_games.drop(columns=['qb_name_x', 'qb_name_y'], inplace=True, errors='ignore')
 
-    upcoming_games.drop(columns=['qb_name_x', 'qb_name_y'], inplace=True)
-
-    # Add regular season flag: 1 if NOT between Jan 8 and Aug 30, else 0
+    # --- Ensure tz-naive for date comparisons ---
     game_dates = pd.to_datetime(upcoming_games['commence_time'])
+    if game_dates.dt.tz is not None:
+        game_dates = game_dates.dt.tz_localize(None)
+
     jan_8 = pd.to_datetime(game_dates.dt.year.astype(str) + '-01-08')
     aug_30 = pd.to_datetime(game_dates.dt.year.astype(str) + '-08-30')
     upcoming_games['regular_season'] = (~((game_dates >= jan_8) & (game_dates <= aug_30))).astype(int)
 
-    # Add rest features
+    # Rest features
     upcoming_games['both_short_rest'] = ((upcoming_games['home_short_rest'] == 1) & (upcoming_games['away_short_rest'] == 1)).astype(int)
 
-    # Create home/away DataFrames, now including rest features
-    home = upcoming_games[['commence_time', 'home_team', 'away_team', 'total_line', 'home_rolling_avg_qb_epa', 'divisional', 'regular_season', 'international', 'home_short_rest', 'away_short_rest', 'both_short_rest']].copy()
+    upcoming_games = upcoming_games.loc[:, ~upcoming_games.columns.duplicated()]
+
+    # Split home/away for features
+    home = upcoming_games[['commence_time', 'home_team', 'away_team', 'total_line',
+                           'home_rolling_avg_qb_epa', 'divisional', 'regular_season',
+                           'international', 'home_short_rest', 'away_short_rest', 'both_short_rest']].copy()
     home.rename(columns={'home_team':'team', 'away_team':'opponent', 'commence_time':'date'}, inplace=True)
     home['is_home'] = 1
 
-    away = upcoming_games[['commence_time', 'away_team', 'home_team', 'total_line', 'away_rolling_avg_qb_epa', 'divisional', 'regular_season', 'international', 'home_short_rest', 'away_short_rest', 'both_short_rest']].copy()
+    away = upcoming_games[['commence_time', 'away_team', 'home_team', 'total_line',
+                           'away_rolling_avg_qb_epa', 'divisional', 'regular_season',
+                           'international', 'home_short_rest', 'away_short_rest', 'both_short_rest']].copy()
     away.rename(columns={'away_team':'team', 'home_team':'opponent', 'commence_time':'date'}, inplace=True)
     away['is_home'] = 0
 
-    # Ensure consistent datetime for merging
+    # Make dates tz-naive
     home['date'] = pd.to_datetime(home['date']).dt.tz_localize(None)
     away['date'] = pd.to_datetime(away['date']).dt.tz_localize(None)
     weather_features['kickoff_time'] = pd.to_datetime(weather_features['kickoff_time']).dt.tz_localize(None)
 
-    # Merge rolling averages not already handled above
+    # Merge rolling averages from historical team games
     rolling_features = [
         'rolling_avg_points_for', 'rolling_avg_points_against',
         'rolling_avg_def_epa', 'rolling_avg_off_pace', 'rolling_rz_eff'
@@ -90,19 +96,17 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
         last_vals.rename(columns={feat: feat+'_pre_game'}, inplace=True)
         home = home.merge(last_vals, on='team', how='left')
         away = away.merge(last_vals, on='team', how='left')
-    
+
+    # Map weather features
     if weather_features['home_team'].isin(TEAM_ABBREV.keys()).any():
         weather_features['home_team'] = weather_features['home_team'].map(TEAM_ABBREV)
 
-    # Merge home team weather
-    home = home.merge(
-        weather_features,
-        left_on=['team', 'date'],
-        right_on=['home_team', 'kickoff_time'],
-        how='left'
-    )
+    home = home.merge(weather_features,
+                      left_on=['team', 'date'],
+                      right_on=['home_team', 'kickoff_time'],
+                      how='left')
 
-    # Combine home + away into single row per game
+    # Merge home + away into single row per game
     game_features = home.merge(
         away,
         left_on=['date', 'opponent'],  # home.opponent = away.team
@@ -110,7 +114,7 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
         suffixes=('_home', '_away')
     )
 
-    # Cleanup
+    # Cleanup column names
     game_features.rename(columns={
         'team_home': 'home_team',
         'team_away': 'away_team',
@@ -122,12 +126,13 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
         'away_short_rest_home': 'away_short_rest',
         'both_short_rest_home': 'both_short_rest'
     }, inplace=True)
-    game_features.drop(columns=[
-        'opponent_home','opponent_away', 'total_line_away', 'divisional_away', 'regular_season_away', 'international_away', 
-        'home_short_rest_away', 'away_short_rest_away', 'both_short_rest_away'
-    ], inplace=True)
+    drop_cols = [
+        'opponent_home','opponent_away','total_line_away','divisional_away','regular_season_away',
+        'international_away','home_short_rest_away','away_short_rest_away','both_short_rest_away'
+    ]
+    game_features.drop(columns=drop_cols, inplace=True, errors='ignore')
 
-    # Rename columns to match model expectations
+    # Rename for model
     feature_mapping = {
         'total_line': 'total_line',
         'rolling_avg_points_for_pre_game_home': 'home_rolling_avg_points_for',
@@ -150,11 +155,10 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
         'both_short_rest': 'both_short_rest',
         'rolling_rz_eff_pre_game_home' : 'home_rolling_rz_eff',
         'rolling_rz_eff_pre_game_away' : 'away_rolling_rz_eff'
-
     }
     game_features = game_features.rename(columns=feature_mapping)
 
-    # add interaction terms
+    # Add interaction terms
     game_features['home_x_away_pace'] = game_features['home_rolling_avg_off_pace'] * game_features['away_rolling_avg_off_pace']
     game_features['home_pace_x_wind_speed'] = game_features['home_rolling_avg_off_pace'] * game_features['home_wind_speed']
     game_features['away_pace_x_wind_speed'] = game_features['away_rolling_avg_off_pace'] * game_features['home_wind_speed']
@@ -162,7 +166,10 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
     game_features['away_qb_x_home_def'] = game_features['away_rolling_avg_qb_epa'] * game_features['home_rolling_avg_def_epa']
 
     # Predict totals
-    feature_cols = list(feature_mapping.values()) + ['home_x_away_pace'] + ['home_pace_x_wind_speed'] + ['away_pace_x_wind_speed'] + ['home_qb_x_away_def'] + ['away_qb_x_home_def']
+    feature_cols = list(feature_mapping.values()) + [
+        'home_x_away_pace','home_pace_x_wind_speed','away_pace_x_wind_speed',
+        'home_qb_x_away_def','away_qb_x_home_def'
+    ]
     game_features['predicted_total'] = game_features['total_line'] + model.predict(game_features[feature_cols])
 
     return game_features
