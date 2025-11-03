@@ -13,6 +13,7 @@ from src.rest import create_rest_features
 from src.evaluate import evaluate_model
 from src.redzone import create_red_zone
 import argparse
+import sys
 
 
 def run_analysis(totals):
@@ -96,6 +97,11 @@ if __name__ == "__main__":
 
     # Fetch totals with or without skipping API
     totals = get_totals(use_cache_only=args.use_cached_totals)
+
+    # Stop here if NOT using cached totals
+    if not args.use_cached_totals:
+        print("Fetched fresh totals, stopping run so user can add manual-only features.")
+        sys.exit(0)
 
     # Run full analysis using these totals
     predictions = run_analysis(totals)
