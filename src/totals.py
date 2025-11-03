@@ -84,6 +84,7 @@ def get_totals(path=DATA_PATH, api_key=API_KEY):
 
         # Normalize new datetime
         new_df['commence_time'] = pd.to_datetime(new_df['commence_time'], utc=True)
+        new_df['commence_time'] = new_df['commence_time'].dt.tz_convert(eastern)
         
         # Combine and drop duplicates
         combined = pd.concat([existing_df, new_df], ignore_index=True)
