@@ -6,6 +6,7 @@ import re
 import numpy as np
 import matplotlib.pyplot as plt
 import io
+from src.load import load_data
 
 st.set_page_config(layout='wide')
 
