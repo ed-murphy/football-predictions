@@ -36,17 +36,11 @@ with tab1:
     latest_path = os.path.join(pred_dir, latest_csv)
     predictions = pd.read_csv(latest_path)
 
-    games, _ = load_data()
-    if {'home_score', 'away_score'}.issubset(games.columns):
-        games['actual_total'] = games['home_score'] + games['away_score']
-    games['date'] = pd.to_datetime(games['gameday']).dt.date
-
     predictions['date'] = pd.to_datetime(predictions['date']).dt.date
-    predictions = predictions.merge(
-        games[['home_team', 'away_team', 'date', 'actual_total']],
-        on=['home_team', 'away_team', 'date'],
-        how='left'
-    )
+    if 'actual_total' not in predictions.columns:
+        predictions['actual_total'] = np.nan
+    else:
+        predictions['actual_total'] = predictions['actual_total'].replace('', np.nan).astype(float)
 
     match = re.search(r'_(\d{8})', latest_csv)
     if match:
@@ -73,11 +67,6 @@ with tab1:
     display_df = week_df.sort_values(['date', 'home_team']).copy()
     display_df['date'] = display_df['date'].dt.strftime("%b %d, %Y")
     display_df['predicted_total'] = display_df['predicted_total'].round(1)
-
-    if 'actual_total' not in display_df.columns:
-        display_df['actual_total'] = np.nan
-    else:
-        display_df['actual_total'] = display_df['actual_total'].replace('', np.nan).astype(float)
 
     if 'total_line' in display_df.columns:
         display_df['total_line'] = display_df['total_line'].round(1)
