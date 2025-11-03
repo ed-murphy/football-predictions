@@ -83,8 +83,8 @@ def run_analysis():
         prod_model
     )
 
-    # Use model to generate predictions for upcoming games
-    predictions = save_predictions(upcoming_team_games)
+    # Use model to generate predictions for upcoming games (and add points scored in completed games)
+    predictions = save_predictions(upcoming_team_games, games)
 
     return predictions
 
