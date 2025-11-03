@@ -2,7 +2,7 @@ import requests
 import pandas as pd
 import os
 from dotenv import load_dotenv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from pytz import timezone as tz
 
 
@@ -26,6 +26,12 @@ def get_totals_from_api(api_key=API_KEY):
     games = []
 
     eastern = tz("US/Eastern")
+    now_eastern = datetime.now(eastern)
+
+    days_ahead = (1 - now_eastern.weekday()) % 7
+    next_tuesday = (now_eastern + timedelta(days=days_ahead)).replace(
+        hour=23, minute=59, second=59, microsecond=0
+    )
 
     for game in data:
         if not game.get('bookmakers'):
@@ -33,6 +39,10 @@ def get_totals_from_api(api_key=API_KEY):
 
         # Parse commence_time as UTC
         commence_time_utc = datetime.fromisoformat(game['commence_time'].replace("Z", "+00:00"))
+        commence_time_eastern = commence_time_utc.astimezone(eastern)
+
+        if commence_time_eastern > next_tuesday:
+            continue
 
         # Only consider DraftKings
         dk_bookmakers = [b for b in game['bookmakers'] if b['title'].lower() == 'draftkings']
@@ -61,16 +71,34 @@ def get_totals(path=DATA_PATH, api_key=API_KEY):
     eastern = tz("US/Eastern")
 
     if os.path.exists(path):
-        print(f"Reading cached Vegas totals for upcoming games from {path}...")
-        df = pd.read_csv(path)
+        print(f"Reading existing Vegas totals from {path}...")
+        existing_df = pd.read_csv(path)
+
+        # Normalize datetime
+        existing_df['commence_time'] = pd.to_datetime(existing_df['commence_time'], errors='coerce', utc=True)
+        existing_df['commence_time'] = existing_df['commence_time'].dt.tz_convert(eastern)
+
+        # Get new data
+        print("Fetching new and updated game totals from API...")
+        new_df = get_totals_from_api(api_key)
+
+        # Normalize new datetime
+        new_df['commence_time'] = pd.to_datetime(new_df['commence_time'], utc=True)
         
-        # Ensure datetime, handle tz-aware safely
-        df['commence_time'] = pd.to_datetime(df['commence_time'], errors='coerce', utc=True)
-        df['commence_time'] = df['commence_time'].dt.tz_convert(eastern).dt.tz_localize(None)
-        
-        return df
+        # Combine and drop duplicates
+        combined = pd.concat([existing_df, new_df], ignore_index=True)
+        combined = combined.drop_duplicates(
+            subset=['home_team', 'away_team', 'commence_time', 'bookmaker'],
+            keep='last'
+        ).sort_values(by='commence_time')
+
+        combined.to_csv(path, index=False)
+        print(f"Appended new games. Saved updated file to {path}.")
+        return combined
+
     else:
-        print("Downloading fresh Vegas totals for upcoming games...")
+        print("No existing file found. Downloading fresh totals...")
         df = get_totals_from_api(api_key)
         df.to_csv(path, index=False)
+        print(f"Saved new file to {path}.")
         return df
