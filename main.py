@@ -12,12 +12,10 @@ from src.predictions import save_predictions
 from src.rest import create_rest_features
 from src.evaluate import evaluate_model
 from src.redzone import create_red_zone
+import argparse
 
 
-def run_analysis():
-
-    # Load Vegas totals for upcoming games
-    totals = get_totals()
+def run_analysis(totals):
 
     # Load historical play-level and game-level data using nfl_data_py
     games, plays = load_data()
@@ -90,4 +88,14 @@ def run_analysis():
 
 
 if __name__ == "__main__":
-    run_analysis()
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--use_cached_totals", action="store_true",
+                        help="Skip fetching new totals, use cached CSV")
+    args = parser.parse_args()
+
+    # Fetch totals with or without skipping API
+    totals = get_totals(use_cache_only=args.use_cached_totals)
+
+    # Run full analysis using these totals
+    predictions = run_analysis(totals)

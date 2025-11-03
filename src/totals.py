@@ -67,7 +67,7 @@ def get_totals_from_api(api_key=API_KEY):
     return pd.DataFrame(games)
 
 
-def get_totals(path=DATA_PATH, api_key=API_KEY):
+def get_totals(path=DATA_PATH, api_key=API_KEY, use_cache_only=False):
     eastern = tz("US/Eastern")
 
     if os.path.exists(path):
@@ -77,6 +77,10 @@ def get_totals(path=DATA_PATH, api_key=API_KEY):
         # Normalize datetime
         existing_df['commence_time'] = pd.to_datetime(existing_df['commence_time'], errors='coerce', utc=True)
         existing_df['commence_time'] = existing_df['commence_time'].dt.tz_convert(eastern)
+
+        if use_cache_only:
+            print("Using cached totals only. Skipping API fetch.")
+            return existing_df
 
         # Get new data
         print("Fetching new and updated game totals from API...")
@@ -98,6 +102,8 @@ def get_totals(path=DATA_PATH, api_key=API_KEY):
         return combined
 
     else:
+        if use_cache_only:
+            raise FileNotFoundError(f"No cached file found at {path}, cannot skip API fetch.")
         print("No existing file found. Downloading fresh totals...")
         df = get_totals_from_api(api_key)
         df.to_csv(path, index=False)
