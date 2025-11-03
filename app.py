@@ -6,6 +6,7 @@ import re
 import numpy as np
 import matplotlib.pyplot as plt
 import io
+from src.load import load_data
 
 st.set_page_config(layout='wide')
 
@@ -34,6 +35,18 @@ with tab1:
     latest_csv = max(csv_files, key=lambda x: os.path.getmtime(os.path.join(pred_dir, x)))
     latest_path = os.path.join(pred_dir, latest_csv)
     predictions = pd.read_csv(latest_path)
+
+    games, _ = load_data()
+    if {'home_score', 'away_score'}.issubset(games.columns):
+        games['actual_total'] = games['home_score'] + games['away_score']
+    games['date'] = pd.to_datetime(games['gameday']).dt.date
+
+    predictions['date'] = pd.to_datetime(predictions['date']).dt.date
+    predictions = predictions.merge(
+        games[['home_team', 'away_team', 'date', 'actual_total']],
+        on=['home_team', 'away_team', 'date'],
+        how='left'
+    )
 
     match = re.search(r'_(\d{8})', latest_csv)
     if match:
