@@ -1,6 +1,8 @@
 import pandas as pd
+import pytz
 
-def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, weather_features, model):
+def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
+                                weather_features, model, existing_predictions=None):
     """
     Build one row per upcoming game with home/away features and forecasted weather.
     All datetime columns are tz-naive to prevent comparison errors.
@@ -23,6 +25,37 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
     upcoming_games = upcoming_games.copy()
     upcoming_games['home_team'] = upcoming_games['home_team'].map(TEAM_ABBREV)
     upcoming_games['away_team'] = upcoming_games['away_team'].map(TEAM_ABBREV)
+
+    # Filter out games that are already predicted
+    if existing_predictions is not None and not existing_predictions.empty:
+        # Normalize datetimes
+        upcoming_games['commence_date'] = pd.to_datetime(upcoming_games['commence_time']).dt.date
+        existing_predictions['pred_date'] = pd.to_datetime(existing_predictions['date']).dt.date
+
+        # Merge-based filtering
+        merged = upcoming_games.merge(
+            existing_predictions,
+            left_on=['home_team', 'away_team', 'commence_date'],
+            right_on=['home_team', 'away_team', 'pred_date'],
+            how='left',
+            indicator=True
+        )
+
+        # Keep only games not already predicted
+        upcoming_games = merged[merged['_merge'] == 'left_only'].copy()
+
+        # Drop right-side total_line if it exists, keep left-side as 'total_line'
+        if 'total_line_y' in upcoming_games.columns:
+            upcoming_games = upcoming_games.drop(columns=['total_line_y'])
+        if 'total_line_x' in upcoming_games.columns:
+            upcoming_games = upcoming_games.rename(columns={'total_line_x': 'total_line'})
+
+        # Drop helper columns
+        upcoming_games = upcoming_games.drop(columns=['_merge', 'pred_date'], errors='ignore')
+
+        if upcoming_games.empty:
+            print("All upcoming games are already in existing predictions.")
+            return pd.DataFrame()
 
     # Divisional matchups
     DIVISION_MAP = {
@@ -82,9 +115,14 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
     away['is_home'] = 0
 
     # Make dates tz-naive
-    home['date'] = pd.to_datetime(home['date']).dt.tz_localize(None)
-    away['date'] = pd.to_datetime(away['date']).dt.tz_localize(None)
-    weather_features['kickoff_time'] = pd.to_datetime(weather_features['kickoff_time']).dt.tz_localize(None)
+    eastern = pytz.timezone("US/Eastern")
+    home['date'] = pd.to_datetime(home['date'], utc=True).dt.tz_convert(eastern).dt.tz_localize(None)
+    away['date'] = pd.to_datetime(away['date'], utc=True).dt.tz_convert(eastern).dt.tz_localize(None)
+    weather_features['kickoff_time'] = (
+        pd.to_datetime(weather_features['kickoff_time'], utc=True)
+        .dt.tz_convert(eastern)
+        .dt.tz_localize(None)
+    )
 
     # Merge rolling averages from historical team games
     rolling_features = [
@@ -106,19 +144,23 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
                       right_on=['home_team', 'kickoff_time'],
                       how='left')
 
-    # Merge home + away into single row per game
+    # Rename weather columns in home before merging
+    home.rename(columns={
+        'temperature': 'home_temperature',
+        'wind_speed': 'home_wind_speed',
+        'kickoff_time': 'kickoff_time'
+    }, inplace=True)
+
+    # Merge home + away
     game_features = home.merge(
         away,
-        left_on=['date', 'opponent'],  # home.opponent = away.team
+        left_on=['date', 'opponent'],
         right_on=['date', 'team'],
         suffixes=('_home', '_away')
     )
 
-    # Cleanup column names
+    # Rename home-side columns to match model expectations
     game_features.rename(columns={
-        'team_home': 'home_team',
-        'team_away': 'away_team',
-        'total_line_home': 'total_line',
         'divisional_home': 'divisional',
         'regular_season_home': 'regular_season',
         'international_home': 'international',
@@ -126,8 +168,13 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa, 
         'away_short_rest_home': 'away_short_rest',
         'both_short_rest_home': 'both_short_rest'
     }, inplace=True)
+
+    # Rename total_line from home so it exists
+    game_features.rename(columns={'total_line_home': 'total_line'}, inplace=True)
+
+    # Cleanup only truly redundant columns
     drop_cols = [
-        'opponent_home','opponent_away','total_line_away','divisional_away','regular_season_away',
+        'opponent_home', 'opponent_away', 'total_line_away', 'divisional_away', 'regular_season_away',
         'international_away','home_short_rest_away','away_short_rest_away','both_short_rest_away'
     ]
     game_features.drop(columns=drop_cols, inplace=True, errors='ignore')

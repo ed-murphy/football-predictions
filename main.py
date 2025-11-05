@@ -12,6 +12,7 @@ from src.predictions import save_predictions
 from src.rest import create_rest_features
 from src.evaluate import evaluate_model
 from src.redzone import create_red_zone
+from src.old_predictions import get_existing_predictions
 import argparse
 import sys
 
@@ -73,17 +74,21 @@ def run_analysis(totals):
         random_state = 42
     )
 
-    # Prepare upcoming games with all features and predict
+    # fetch existing predictions
+    existing_predictions = get_existing_predictions()
+
+    # prepare upcoming games data frame and make new predictions
     upcoming_team_games = prepare_upcoming_team_games(
         totals,
         team_games,
         latest_qb_epa,
         weather_features,
-        prod_model
+        prod_model,
+        existing_predictions
     )
 
     # Use model to generate predictions for upcoming games (and add points scored in completed games)
-    predictions = save_predictions(upcoming_team_games, games)
+    predictions = save_predictions(existing_predictions, upcoming_team_games, games)
 
     return predictions
 
