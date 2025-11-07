@@ -44,6 +44,8 @@ def save_predictions(existing_predictions: pd.DataFrame,
     combined['date'] = pd.to_datetime(combined['date']).dt.strftime('%Y-%m-%d')
     games['gameday'] = pd.to_datetime(games['gameday']).dt.strftime('%Y-%m-%d')
 
+    combined = combined.drop(columns=[c for c in combined.columns if 'actual_total' in c], errors='ignore')
+
     combined = combined.merge(
         games[['gameday', 'home_team', 'away_team', 'total_points']],
         left_on=['date', 'home_team', 'away_team'],
@@ -54,6 +56,8 @@ def save_predictions(existing_predictions: pd.DataFrame,
     combined = combined.rename(columns={'total_points': 'actual_total'})
 
     combined = combined.drop(columns=['gameday'], errors='ignore')
+
+    combined['predicted_total'] = combined['predicted_total'].round(1)
 
     os.makedirs(predictions_dir, exist_ok=True)
 
