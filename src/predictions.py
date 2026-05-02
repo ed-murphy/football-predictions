@@ -1,6 +1,10 @@
+import logging
 import pandas as pd
 import os
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
 
 def save_predictions(existing_predictions: pd.DataFrame,
                      upcoming_team_games: pd.DataFrame,
@@ -12,7 +16,7 @@ def save_predictions(existing_predictions: pd.DataFrame,
     Saves output to predictions/predictions_YYYYMMDD[_vN].csv
     """
     if upcoming_team_games is None or upcoming_team_games.empty:
-        print("No new upcoming games to predict. Exiting function.")
+        logger.info("No new upcoming games to predict. Exiting function.")
         return None
 
     existing_predictions = existing_predictions.copy()
@@ -72,6 +76,6 @@ def save_predictions(existing_predictions: pd.DataFrame,
 
     combined.to_csv(filepath, index=False)
 
-    print(f"Predictions saved to {filepath}")
+    logger.info("Predictions saved to %s", filepath)
 
     return combined

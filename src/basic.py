@@ -1,4 +1,8 @@
+import logging
 import pandas as pd
+
+logger = logging.getLogger(__name__)
+
 
 def create_basic_features(games):
     """Create team-game level features from games and play-by-play data."""
@@ -46,5 +50,5 @@ def create_basic_features(games):
     team_games['away_rolling_avg_points_for'] = team_games.groupby('game_id')['rolling_avg_points_for'].transform(lambda x: x.where(team_games['is_home']==0).max())
     team_games['away_rolling_avg_points_against'] = team_games.groupby('game_id')['rolling_avg_points_against'].transform(lambda x: x.where(team_games['is_home']==0).max())
 
-    print("Basic football features created.")
+    logger.info("Basic football features created.")
     return team_games

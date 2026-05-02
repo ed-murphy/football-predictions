@@ -1,4 +1,9 @@
+import logging
 import pandas as pd
+from config import ROLLING_WINDOW_PACE
+
+logger = logging.getLogger(__name__)
+
 
 def create_pace_features(team_games: pd.DataFrame, pbp: pd.DataFrame) -> pd.DataFrame:
     # --- build pace dataset ---
@@ -11,12 +16,13 @@ def create_pace_features(team_games: pd.DataFrame, pbp: pd.DataFrame) -> pd.Data
     )
 
     plays_per_game["seconds_per_play"] = 3600 / plays_per_game["plays"]
-
     plays_per_game = plays_per_game.sort_values(["posteam", "game_id"])
 
+    # Shift before rolling to avoid including the current game (leakage fix)
     plays_per_game["rolling_avg_off_pace"] = (
         plays_per_game.groupby("posteam")["seconds_per_play"]
-        .transform(lambda x: x.rolling(5, min_periods=1).mean())
+        .apply(lambda x: x.shift().rolling(ROLLING_WINDOW_PACE, min_periods=1).mean())
+        .reset_index(level=0, drop=True)
     )
 
     # --- merge directly onto team_games ---
@@ -37,6 +43,6 @@ def create_pace_features(team_games: pd.DataFrame, pbp: pd.DataFrame) -> pd.Data
     team_games["home_rolling_avg_off_pace"] = team_games.groupby("game_id")["home_rolling_avg_off_pace"].transform("max")
     team_games["away_rolling_avg_off_pace"] = team_games.groupby("game_id")["away_rolling_avg_off_pace"].transform("max")
 
-    print("Team pace features created.")
+    logger.info("Team pace features created.")
 
     return team_games

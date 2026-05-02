@@ -1,5 +1,9 @@
+import logging
 import pandas as pd
 import pytz
+
+logger = logging.getLogger(__name__)
+
 
 def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
                                 weather_features, model, existing_predictions=None):
@@ -54,7 +58,7 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
         upcoming_games = upcoming_games.drop(columns=['_merge', 'pred_date'], errors='ignore')
 
         if upcoming_games.empty:
-            print("All upcoming games are already in existing predictions.")
+            logger.info("All upcoming games are already in existing predictions.")
             return pd.DataFrame()
 
     # Divisional matchups
@@ -99,18 +103,47 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
     # Rest features
     upcoming_games['both_short_rest'] = ((upcoming_games['home_short_rest'] == 1) & (upcoming_games['away_short_rest'] == 1)).astype(int)
 
+    # --- Post-bye flag: compute from last historical game date vs upcoming date ---
+    last_game = (
+        team_games_hist
+        .sort_values('date')
+        .groupby('team')['date']
+        .last()
+        .reset_index()
+        .rename(columns={'date': 'last_game_date'})
+    )
+    last_game['last_game_date'] = pd.to_datetime(last_game['last_game_date']).dt.tz_localize(None)
+
+    upcoming_dt = pd.to_datetime(upcoming_games['commence_time'], utc=True).dt.tz_localize(None)
+
+    # Home post-bye
+    upcoming_games = upcoming_games.merge(last_game.rename(columns={'team': 'home_team'}),
+                                          on='home_team', how='left')
+    home_gap = (upcoming_dt - upcoming_games['last_game_date'].values).dt.days
+    upcoming_games['home_post_bye'] = ((home_gap >= 11) & (home_gap <= 21)).astype(int)
+    upcoming_games.drop(columns=['last_game_date'], inplace=True)
+
+    # Away post-bye
+    upcoming_games = upcoming_games.merge(last_game.rename(columns={'team': 'away_team'}),
+                                          on='away_team', how='left')
+    away_gap = (upcoming_dt - upcoming_games['last_game_date'].values).dt.days
+    upcoming_games['away_post_bye'] = ((away_gap >= 11) & (away_gap <= 21)).astype(int)
+    upcoming_games.drop(columns=['last_game_date'], inplace=True)
+
     upcoming_games = upcoming_games.loc[:, ~upcoming_games.columns.duplicated()]
 
     # Split home/away for features
     home = upcoming_games[['commence_time', 'home_team', 'away_team', 'total_line',
                            'home_rolling_avg_qb_epa', 'divisional', 'regular_season',
-                           'international', 'home_short_rest', 'away_short_rest', 'both_short_rest']].copy()
+                           'international', 'home_short_rest', 'away_short_rest', 'both_short_rest',
+                           'home_post_bye', 'away_post_bye']].copy()
     home.rename(columns={'home_team':'team', 'away_team':'opponent', 'commence_time':'date'}, inplace=True)
     home['is_home'] = 1
 
     away = upcoming_games[['commence_time', 'away_team', 'home_team', 'total_line',
                            'away_rolling_avg_qb_epa', 'divisional', 'regular_season',
-                           'international', 'home_short_rest', 'away_short_rest', 'both_short_rest']].copy()
+                           'international', 'home_short_rest', 'away_short_rest', 'both_short_rest',
+                           'home_post_bye', 'away_post_bye']].copy()
     away.rename(columns={'away_team':'team', 'home_team':'opponent', 'commence_time':'date'}, inplace=True)
     away['is_home'] = 0
 
@@ -127,7 +160,8 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
     # Merge rolling averages from historical team games
     rolling_features = [
         'rolling_avg_points_for', 'rolling_avg_points_against',
-        'rolling_avg_def_epa', 'rolling_avg_off_pace', 'rolling_rz_eff'
+        'rolling_avg_def_epa', 'rolling_avg_off_pace', 'rolling_rz_eff',
+        'rolling_avg_turnovers', 'rolling_avg_3rd_pct',
     ]
     for feat in rolling_features:
         last_vals = team_games_hist.groupby('team')[feat].last().reset_index()
@@ -166,7 +200,9 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
         'international_home': 'international',
         'home_short_rest_home': 'home_short_rest',
         'away_short_rest_home': 'away_short_rest',
-        'both_short_rest_home': 'both_short_rest'
+        'both_short_rest_home': 'both_short_rest',
+        'home_post_bye_home': 'home_post_bye',
+        'away_post_bye_home': 'away_post_bye',
     }, inplace=True)
 
     # Rename total_line from home so it exists
@@ -175,7 +211,8 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
     # Cleanup only truly redundant columns
     drop_cols = [
         'opponent_home', 'opponent_away', 'total_line_away', 'divisional_away', 'regular_season_away',
-        'international_away','home_short_rest_away','away_short_rest_away','both_short_rest_away'
+        'international_away', 'home_short_rest_away', 'away_short_rest_away', 'both_short_rest_away',
+        'home_post_bye_away', 'away_post_bye_away',
     ]
     game_features.drop(columns=drop_cols, inplace=True, errors='ignore')
 
@@ -196,12 +233,18 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
         'rolling_avg_off_pace_pre_game_away': 'away_rolling_avg_off_pace',
         'divisional': 'divisional',
         'regular_season': 'regular_season',
-        'international' : 'international',
+        'international': 'international',
         'home_short_rest': 'home_short_rest',
         'away_short_rest': 'away_short_rest',
         'both_short_rest': 'both_short_rest',
-        'rolling_rz_eff_pre_game_home' : 'home_rolling_rz_eff',
-        'rolling_rz_eff_pre_game_away' : 'away_rolling_rz_eff'
+        'home_post_bye': 'home_post_bye',
+        'away_post_bye': 'away_post_bye',
+        'rolling_rz_eff_pre_game_home': 'home_rolling_rz_eff',
+        'rolling_rz_eff_pre_game_away': 'away_rolling_rz_eff',
+        'rolling_avg_turnovers_pre_game_home': 'home_rolling_avg_turnovers',
+        'rolling_avg_turnovers_pre_game_away': 'away_rolling_avg_turnovers',
+        'rolling_avg_3rd_pct_pre_game_home': 'home_rolling_avg_3rd_pct',
+        'rolling_avg_3rd_pct_pre_game_away': 'away_rolling_avg_3rd_pct',
     }
     game_features = game_features.rename(columns=feature_mapping)
 

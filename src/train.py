@@ -1,8 +1,12 @@
+import logging
 import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
+from config import MODEL_N_ESTIMATORS, MODEL_MAX_DEPTH
+
+logger = logging.getLogger(__name__)
 
 
 def train_model(
@@ -31,7 +35,7 @@ def train_model(
 
     # Features for prediction
     features = [
-        "total_line", # Vegas total for benchmarking
+        "total_line",                        # Vegas total (benchmark prior)
         "home_rolling_avg_points_for",
         "home_rolling_avg_points_against",
         "away_rolling_avg_points_for",
@@ -50,8 +54,14 @@ def train_model(
         "home_short_rest",
         "away_short_rest",
         "both_short_rest",
+        "home_post_bye",                     # team coming off a bye week
+        "away_post_bye",
         "home_rolling_rz_eff",
-        "away_rolling_rz_eff"
+        "away_rolling_rz_eff",
+        "home_rolling_avg_turnovers",        # offensive turnover rate (INT + fumbles lost)
+        "away_rolling_avg_turnovers",
+        "home_rolling_avg_3rd_pct",          # third-down conversion rate
+        "away_rolling_avg_3rd_pct",
     ]
 
    # Keep one row per game (home team)
@@ -89,8 +99,8 @@ def train_model(
 
     # Fit model
     model = RandomForestRegressor(
-        n_estimators=500,
-        max_depth=8,
+        n_estimators=MODEL_N_ESTIMATORS,
+        max_depth=MODEL_MAX_DEPTH,
         random_state=random_state
     )
     model.fit(X_train, y_train)
@@ -98,6 +108,6 @@ def train_model(
     # Save trained model
     joblib.dump(model, model_path)
 
-    print("Model has been trained.")
+    logger.info("Model trained and saved to %s.", model_path)
 
     return model, X_test, y_test, features, test_data

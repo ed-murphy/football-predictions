@@ -1,5 +1,11 @@
+import logging
 import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
+from config import MODEL_N_ESTIMATORS, MODEL_MAX_DEPTH, RANDOM_STATE
+
+logger = logging.getLogger(__name__)
+
 
 def evaluate_model(model, X_test, y_test, features, test_data, precision_margin):
     """
@@ -13,8 +19,7 @@ def evaluate_model(model, X_test, y_test, features, test_data, precision_margin)
 
     mae = mean_absolute_error(y_test_total, y_pred_total)
     r2 = r2_score(y_test_total, y_pred_total)
-    print(f"MAE: {mae:.2f}")
-    print(f"R2: {r2:.3f}")
+    logger.info("Holdout MAE: %.2f  R²: %.3f", mae, r2)
 
     results = {"MAE": mae, "R2": r2}
 
@@ -33,6 +38,9 @@ def evaluate_model(model, X_test, y_test, features, test_data, precision_margin)
         "Correct Predictions": int(correct_predictions),
         "Precision": precision
     })
+    logger.info("Precision at ±%d pts: %s/%s = %.1f%%",
+                precision_margin, int(correct_predictions), int(num_predictions),
+                (precision or 0) * 100)
 
     # Feature importance
     if hasattr(model, "feature_importances_"):
@@ -40,7 +48,99 @@ def evaluate_model(model, X_test, y_test, features, test_data, precision_margin)
             model.feature_importances_, index=features
         ).sort_values(ascending=False)
         results["Feature Importance"] = feature_importance.to_dict()
-    
-    print(results)
 
     return results
+
+
+def walk_forward_cv(
+    team_games: pd.DataFrame,
+    features: list,
+    precision_margin: int = 4,
+    start_test_season: int = 2018,
+) -> pd.DataFrame:
+    """
+    Walk-forward (expanding window) cross-validation.
+
+    For each season >= start_test_season, train on ALL prior seasons and
+    evaluate on that season.  Returns a DataFrame with per-season metrics so
+    you can see whether accuracy is stable across years.
+
+    Parameters
+    ----------
+    team_games : pd.DataFrame
+        Full team-game dataset (same one passed to train_model).
+    features : list
+        Feature column names used by the model (including interaction terms
+        if they should be computed here).
+    precision_margin : int
+        Minimum |predicted - Vegas| to count as a signal.
+    start_test_season : int
+        First season to use as a test fold.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: season, mae, r2, n_signals, n_correct, precision
+    """
+    # Build model-ready data (mirrors logic in train_model)
+    model_data = team_games.loc[
+        team_games["is_home"] == 1,
+        ["game_id", "season", "week", "total_points"] + features
+    ].copy().dropna(subset=features + ["total_points"])
+
+    model_data['residual'] = model_data['total_points'] - model_data['total_line']
+
+    all_seasons = sorted(model_data['season'].unique())
+    test_seasons = [s for s in all_seasons if s >= start_test_season]
+
+    rows = []
+    for test_season in test_seasons:
+        train_data = model_data[model_data['season'] < test_season]
+        test_data  = model_data[model_data['season'] == test_season]
+
+        if len(train_data) < 50 or test_data.empty:
+            continue
+
+        X_tr, y_tr = train_data[features], train_data['residual']
+        X_te, y_te = test_data[features],  test_data['residual']
+
+        m = RandomForestRegressor(
+            n_estimators=MODEL_N_ESTIMATORS,
+            max_depth=MODEL_MAX_DEPTH,
+            random_state=RANDOM_STATE
+        )
+        m.fit(X_tr, y_tr)
+
+        vegas  = X_te['total_line'].values
+        y_pred = vegas + m.predict(X_te)
+        y_true = vegas + y_te.values
+
+        mae = mean_absolute_error(y_true, y_pred)
+        r2  = r2_score(y_true, y_pred)
+
+        over_sig  = y_pred > vegas + precision_margin
+        under_sig = y_pred < vegas - precision_margin
+        signals   = over_sig | under_sig
+        n_signals = int(signals.sum())
+        n_correct = int(
+            (((y_true > vegas) & over_sig) | ((y_true < vegas) & under_sig)).sum()
+        )
+        prec = n_correct / n_signals if n_signals > 0 else None
+
+        rows.append({
+            'season':    test_season,
+            'mae':       round(mae, 2),
+            'r2':        round(r2, 3),
+            'n_signals': n_signals,
+            'n_correct': n_correct,
+            'precision': round(prec, 3) if prec is not None else None,
+        })
+        logger.info("CV %d — MAE: %.2f  R²: %.3f  Precision: %s/%s",
+                    test_season, mae, r2, n_correct, n_signals)
+
+    cv_results = pd.DataFrame(rows)
+    if not cv_results.empty:
+        avg = cv_results[['mae', 'r2', 'precision']].mean()
+        logger.info("Walk-forward CV averages — MAE: %.2f  R²: %.3f  Precision: %.3f",
+                    avg['mae'], avg['r2'], avg['precision'])
+    return cv_results

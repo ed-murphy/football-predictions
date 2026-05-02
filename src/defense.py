@@ -1,4 +1,8 @@
+import logging
 import pandas as pd
+
+logger = logging.getLogger(__name__)
+
 
 def create_defense_features(team_games: pd.DataFrame, plays: pd.DataFrame) -> pd.DataFrame:
     """
@@ -49,6 +53,6 @@ def create_defense_features(team_games: pd.DataFrame, plays: pd.DataFrame) -> pd
     team_games = team_games.merge(home_def_features, on='game_id', how='left')
     team_games = team_games.merge(away_def_features, on='game_id', how='left')
 
-    print("Team defense EPA features created.")
+    logger.info("Team defense EPA features created.")
 
     return team_games
