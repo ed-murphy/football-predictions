@@ -1,6 +1,7 @@
 import logging
 import pandas as pd
 import pytz
+from src.model_features import add_engineered_features, get_model_features
 
 logger = logging.getLogger(__name__)
 
@@ -248,18 +249,10 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
     }
     game_features = game_features.rename(columns=feature_mapping)
 
-    # Add interaction terms
-    game_features['home_x_away_pace'] = game_features['home_rolling_avg_off_pace'] * game_features['away_rolling_avg_off_pace']
-    game_features['home_pace_x_wind_speed'] = game_features['home_rolling_avg_off_pace'] * game_features['home_wind_speed']
-    game_features['away_pace_x_wind_speed'] = game_features['away_rolling_avg_off_pace'] * game_features['home_wind_speed']
-    game_features['home_qb_x_away_def'] = game_features['home_rolling_avg_qb_epa'] * game_features['away_rolling_avg_def_epa']
-    game_features['away_qb_x_home_def'] = game_features['away_rolling_avg_qb_epa'] * game_features['home_rolling_avg_def_epa']
+    game_features = add_engineered_features(game_features)
 
     # Predict totals
-    feature_cols = list(feature_mapping.values()) + [
-        'home_x_away_pace','home_pace_x_wind_speed','away_pace_x_wind_speed',
-        'home_qb_x_away_def','away_qb_x_home_def'
-    ]
+    feature_cols = get_model_features()
     game_features['predicted_total'] = game_features['total_line'] + model.predict(game_features[feature_cols])
 
     return game_features
