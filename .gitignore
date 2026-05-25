@@ -7,3 +7,5 @@ old_predictions/
 data/
 model/
 .vscode/launch.json
+*.log
+logs/
