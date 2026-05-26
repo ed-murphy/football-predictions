@@ -23,3 +23,16 @@ def load_data():
     plays = pd.read_parquet(plays_path)
 
     return games, plays
+
+
+def load_injuries():
+    """Load cached NFL weekly injury report data. Returns None if file not found."""
+    path = "data/injuries.parquet"
+    if not os.path.exists(path):
+        logger.warning(
+            "Injury data not found at %s. Re-run the download script to enable injury features.",
+            path,
+        )
+        return None
+    logger.info("Reading historical injury data from %s...", path)
+    return pd.read_parquet(path)

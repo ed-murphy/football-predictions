@@ -139,13 +139,20 @@ def get_forecasted_weather(upcoming_team_games: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("Missing API_KEY_WEATHER in .env file")
 
     if os.path.exists(WEATHER_PATH):
-        logger.info("Reading cached weather forecast for upcoming games from %s...", WEATHER_PATH)
         df = pd.read_csv(WEATHER_PATH, parse_dates=['kickoff_time'])
-        if "temperature_F" in df.columns:
-            df["temperature"] = (df["temperature_F"] - 32) * 5.0 / 9.0
-        if "wind_speed_mph" in df.columns:
-            df["wind_speed"] = df["wind_speed_mph"] * 1.60934
-        return df
+        # Staleness check: if the cached games don't overlap with this week's games, re-fetch
+        cache_home_teams = set(df['home_team'].dropna())
+        upcoming_home_teams = set(upcoming_team_games['home_team'].dropna())
+        if not cache_home_teams.intersection(upcoming_home_teams):
+            logger.info("Weather cache is stale (no overlap with upcoming games). Re-fetching...")
+            os.remove(WEATHER_PATH)
+        else:
+            logger.info("Reading cached weather forecast for upcoming games from %s...", WEATHER_PATH)
+            if "temperature_F" in df.columns:
+                df["temperature"] = (df["temperature_F"] - 32) * 5.0 / 9.0
+            if "wind_speed_mph" in df.columns:
+                df["wind_speed"] = df["wind_speed_mph"] * 1.60934
+            return df
 
     upcoming_team_games = upcoming_team_games.copy()
     upcoming_team_games['kickoff_time'] = pd.to_datetime(upcoming_team_games['commence_time'], utc=True)

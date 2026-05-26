@@ -68,16 +68,14 @@ with tab1:
 
     display_df = week_df.sort_values(['date', 'home_team']).copy()
     display_df['date'] = display_df['date'].dt.strftime("%b %d, %Y")
-    display_df['predicted_total'] = display_df['predicted_total'].round(1)
 
     if 'total_line' in display_df.columns:
         display_df['total_line'] = display_df['total_line'].round(1)
 
-    # Edge column: how far the model's prediction deviates from the Vegas line
-    if 'total_line' in display_df.columns and 'predicted_total' in display_df.columns:
-        display_df['edge'] = (display_df['predicted_total'] - display_df['total_line']).round(1)
-        display_df['edge_str'] = display_df['edge'].apply(
-            lambda x: f"+{x:.1f}" if x > 0 else f"{x:.1f}" if not pd.isna(x) else ""
+    # Format p_over as percentage and derive a confidence string
+    if 'p_over' in display_df.columns:
+        display_df['p_over_pct'] = display_df['p_over'].apply(
+            lambda x: f"{x*100:.1f}%" if pd.notna(x) else ""
         )
 
     display_df = display_df.rename(
@@ -85,7 +83,8 @@ with tab1:
             "date": "Game Date",
             "home_team": "Home",
             "away_team": "Away",
-            "predicted_total": "Predicted",
+            "p_over_pct": "P(Over)",
+            "bet": "Bet",
             "actual_total": "Actual",
             "total_line": "DraftKings Total",
         }
@@ -96,7 +95,7 @@ with tab1:
     )
 
     # Build styled table
-    cols_to_show = ["Game Date", "Home", "Away", "DraftKings Total", "Predicted", "edge_str", "Actual"]
+    cols_to_show = ["Game Date", "Home", "Away", "DraftKings Total", "P(Over)", "Bet", "Actual"]
     cols_to_show = [c for c in cols_to_show if c in display_df.columns]
     styled = display_df[cols_to_show].rename(columns={"edge_str": "Edge"})
 
@@ -179,11 +178,11 @@ with tab3:
     if 'actual_total' in perf_df.columns:
         perf_df = perf_df.replace('', np.nan)
         perf_df['actual_total'] = pd.to_numeric(perf_df['actual_total'], errors='coerce')
-        perf_df['predicted_total'] = pd.to_numeric(perf_df['predicted_total'], errors='coerce')
+        perf_df['p_over'] = pd.to_numeric(perf_df['p_over'], errors='coerce')
         if 'total_line' in perf_df.columns:
             perf_df['total_line'] = pd.to_numeric(perf_df['total_line'], errors='coerce')
 
-        perf_df = perf_df.dropna(subset=['actual_total', 'predicted_total'])
+        perf_df = perf_df.dropna(subset=['actual_total', 'p_over'])
 
         if perf_df.empty:
             st.info("No completed games available yet to evaluate performance.")
@@ -191,13 +190,15 @@ with tab3:
             def quadrant_label(row):
                 if 'total_line' not in row or pd.isna(row['total_line']):
                     return None
-                pred = row['predicted_total']
+                p_over = row['p_over']
                 actual = row['actual_total']
                 market = row['total_line']
+                pred_over = p_over > 0.5
                 if actual > market:
-                    return 'Predicted Over, was Correct' if pred > market else 'Predicted Over, was Incorrect'
+                    return 'Predicted Over, was Correct' if pred_over else 'Predicted Under, was Incorrect'
                 elif actual < market:
-                    return 'Predicted Under, was Correct' if pred < market else 'Predicted Under, was Incorrect'
+                    return 'Predicted Under, was Correct' if not pred_over else 'Predicted Over, was Incorrect'
+                return None
 
             perf_df['quadrant'] = perf_df.apply(quadrant_label, axis=1)
             perf_df = perf_df.dropna(subset=['quadrant'])
@@ -237,15 +238,15 @@ with tab3:
             plt.close(fig)
             st.image(buf.getvalue(), width=600)
 
-            # --- Section 2: Games 4+ Points Different ---
+            # --- Section 2: Bet signals (p_over > 55% or < 45%) ---
             diff_df = perf_df.copy()
-            diff_df['diff'] = (diff_df['predicted_total'] - diff_df['total_line']).abs()
-            diff_df = diff_df[diff_df['diff'] >= 4]
+            diff_df['confidence'] = (diff_df['p_over'] - 0.5).abs()
+            diff_df = diff_df[diff_df['confidence'] >= 0.05]  # p_over > 55% or < 45%
 
             if diff_df.empty:
-                st.info("No games where model prediction differs from market by 4+ points.")
+                st.info("No games where model confidence exceeded 55%.")
             else:
-                st.header("NFL Games So Far This Season Where Model Prediction and Betting Market Differed by 4+ Points")
+                st.header("NFL Games So Far This Season Where Model Confidence > 55%")
 
                 counts_diff = diff_df['quadrant'].value_counts().reindex([
                     'Predicted Over, was Correct',
@@ -284,10 +285,10 @@ with tab3:
                     trend_df['week'] = ((trend_df['date'] - start_date).dt.days // 7 + 1).clip(lower=1)
 
                 def is_correct(row):
-                    if pd.isna(row['total_line']):
+                    if pd.isna(row.get('total_line')):
                         return None
                     return int(
-                        (row['actual_total'] > row['total_line']) == (row['predicted_total'] > row['total_line'])
+                        (row['actual_total'] > row['total_line']) == (row['p_over'] > 0.5)
                     )
 
                 trend_df['correct'] = trend_df.apply(is_correct, axis=1)
@@ -316,19 +317,33 @@ with tab3:
                     plt.close(fig)
                     st.image(buf.getvalue(), width=700)
 
-            # --- Section 4: Calibration scatter ---
-            st.header("Calibration: Predicted vs Actual Total Points")
-            cal_df = perf_df.dropna(subset=['predicted_total', 'actual_total'])
+            # --- Section 4: Probability calibration ---
+            st.header("Probability Calibration")
+            cal_df = perf_df.dropna(subset=['p_over', 'actual_total', 'total_line'])
             if not cal_df.empty:
-                fig, ax = plt.subplots(figsize=(6, 6))
-                ax.scatter(cal_df['predicted_total'], cal_df['actual_total'],
-                           alpha=0.5, color='steelblue', edgecolors='none', s=30)
-                lo = min(cal_df['predicted_total'].min(), cal_df['actual_total'].min()) - 5
-                hi = max(cal_df['predicted_total'].max(), cal_df['actual_total'].max()) + 5
-                ax.plot([lo, hi], [lo, hi], 'r--', linewidth=1, label='Perfect calibration')
-                ax.set_xlabel("Predicted Total")
-                ax.set_ylabel("Actual Total")
-                ax.set_title("Model Calibration")
+                cal_df = cal_df.copy()
+                cal_df['actual_over'] = (cal_df['actual_total'] > cal_df['total_line']).astype(int)
+                cal_df['bin'] = pd.cut(cal_df['p_over'], bins=np.arange(0.3, 0.75, 0.05))
+                calib = (
+                    cal_df.groupby('bin', observed=True)['actual_over']
+                    .agg(empirical_rate='mean', n='count')
+                    .reset_index()
+                )
+                calib['bin_mid'] = calib['bin'].apply(lambda b: b.mid)
+                calib = calib.dropna()
+                fig, ax = plt.subplots(figsize=(6, 5))
+                ax.plot([0.3, 0.7], [0.3, 0.7], 'r--', linewidth=1, label='Perfect calibration')
+                ax.scatter(calib['bin_mid'], calib['empirical_rate'],
+                           s=calib['n'] * 5, alpha=0.7, color='steelblue', zorder=3)
+                for _, row in calib.iterrows():
+                    ax.annotate(f"n={int(row['n'])}",
+                                (row['bin_mid'], row['empirical_rate']),
+                                textcoords='offset points', xytext=(0, 6), ha='center', fontsize=7)
+                ax.set_xlim(0.3, 0.7)
+                ax.set_ylim(0.3, 0.7)
+                ax.set_xlabel("Predicted P(Over)")
+                ax.set_ylabel("Empirical Over Rate")
+                ax.set_title("Calibration: Predicted Probability vs Actual Over Rate")
                 ax.legend()
                 plt.tight_layout()
                 buf = io.BytesIO()
@@ -341,7 +356,7 @@ with tab3:
 with tab4:
     st.header("Model Insights")
 
-    MODEL_PATH = "model/rf_total_points_model_prod.joblib"
+    MODEL_PATH = "model/xgb_total_points_model_prod.joblib"
 
     @st.cache_resource
     def _load_model(path):

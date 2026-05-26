@@ -11,7 +11,7 @@ def create_third_down_features(team_games: pd.DataFrame, plays: pd.DataFrame) ->
     Rolling window is ROLLING_WINDOW_3RD_DOWN games, shifted to use only prior games.
     Adds: home_rolling_avg_3rd_pct, away_rolling_avg_3rd_pct
     """
-    req = {'third_down_attempt', 'third_down_converted'}
+    req = {'third_down_converted', 'third_down_failed'}
     if not req.issubset(plays.columns):
         missing = req - set(plays.columns)
         logger.warning("Missing third-down columns %s — filling with 0.40 league average.", missing)
@@ -20,6 +20,9 @@ def create_third_down_features(team_games: pd.DataFrame, plays: pd.DataFrame) ->
         team_games['away_rolling_avg_3rd_pct'] = 0.40
         return team_games
 
+    # A third-down attempt occurred when it was either converted or failed.
+    plays = plays.copy()
+    plays['third_down_attempt'] = (plays['third_down_converted'].fillna(0) + plays['third_down_failed'].fillna(0)).clip(upper=1)
     third_downs = plays[plays['third_down_attempt'] == 1]
 
     game_3rd = (

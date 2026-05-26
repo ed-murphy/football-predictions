@@ -1,13 +1,50 @@
 import logging
+import glob
+import os
 import pandas as pd
 import pytz
+from datetime import datetime, timedelta
 from src.model_features import add_engineered_features, get_model_features
+from src.injuries import get_upcoming_injury_features
+from src.referee import get_upcoming_referee_feature
+from config import LINE_SNAPSHOTS_DIR
 
 logger = logging.getLogger(__name__)
 
 
+def _get_line_movement(game_features: pd.DataFrame) -> pd.DataFrame:
+    """Merge opening line and compute movement vs current line."""
+    game_features['line_open'] = None
+    game_features['line_movement'] = None
+
+    if not os.path.exists(LINE_SNAPSHOTS_DIR):
+        return game_features
+
+    files = sorted(glob.glob(os.path.join(LINE_SNAPSHOTS_DIR, "lines_*.csv")))
+    cutoff = datetime.today() - timedelta(days=7)
+    recent = [
+        f for f in files
+        if datetime.strptime(os.path.basename(f)[6:14], "%Y%m%d") >= cutoff
+    ]
+    if not recent:
+        return game_features
+
+    opening = (
+        pd.read_csv(recent[0])[["home_team", "away_team", "total_line"]]
+        .rename(columns={"home_team": "snap_home", "away_team": "snap_away", "total_line": "line_open"})
+    )
+    game_features = game_features.merge(
+        opening, left_on=["team_home", "team_away"], right_on=["snap_home", "snap_away"], how="left"
+    ).drop(columns=["snap_home", "snap_away"], errors="ignore")
+    game_features["line_movement"] = game_features["total_line"] - game_features["line_open"]
+    logger.info("Line movement computed from snapshot: %s", recent[0])
+    return game_features
+
+
 def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
-                                weather_features, model, existing_predictions=None):
+                                weather_features, model, existing_predictions=None,
+                                injuries=None, games=None, ref_stats=None,
+                                ref_global_mean=None):
     """
     Build one row per upcoming game with home/away features and forecasted weather.
     All datetime columns are tz-naive to prevent comparison errors.
@@ -161,8 +198,10 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
     # Merge rolling averages from historical team games
     rolling_features = [
         'rolling_avg_points_for', 'rolling_avg_points_against',
-        'rolling_avg_def_epa', 'rolling_avg_off_pace', 'rolling_rz_eff',
-        'rolling_avg_turnovers', 'rolling_avg_3rd_pct',
+        'rolling_avg_def_epa', 'rolling_avg_sack_rate', 'rolling_avg_off_pace',
+        'rolling_rz_eff', 'rolling_avg_turnovers', 'rolling_avg_3rd_pct',
+        'rolling_avg_pass_rate', 'rolling_avg_explosive_rate', 'rolling_avg_success_rate',
+        'rolling_avg_rush_epa', 'rolling_avg_pass_epa', 'rolling_avg_cpoe',
     ]
     for feat in rolling_features:
         last_vals = team_games_hist.groupby('team')[feat].last().reset_index()
@@ -228,6 +267,8 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
         'away_rolling_avg_qb_epa': 'away_rolling_avg_qb_epa',
         'rolling_avg_def_epa_pre_game_home': 'home_rolling_avg_def_epa',
         'rolling_avg_def_epa_pre_game_away': 'away_rolling_avg_def_epa',
+        'rolling_avg_sack_rate_pre_game_home': 'home_rolling_avg_sack_rate',
+        'rolling_avg_sack_rate_pre_game_away': 'away_rolling_avg_sack_rate',
         'temperature': 'home_temperature',
         'wind_speed': 'home_wind_speed',
         'rolling_avg_off_pace_pre_game_home': 'home_rolling_avg_off_pace',
@@ -246,13 +287,47 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
         'rolling_avg_turnovers_pre_game_away': 'away_rolling_avg_turnovers',
         'rolling_avg_3rd_pct_pre_game_home': 'home_rolling_avg_3rd_pct',
         'rolling_avg_3rd_pct_pre_game_away': 'away_rolling_avg_3rd_pct',
+        'rolling_avg_pass_rate_pre_game_home': 'home_rolling_avg_pass_rate',
+        'rolling_avg_pass_rate_pre_game_away': 'away_rolling_avg_pass_rate',
+        'rolling_avg_explosive_rate_pre_game_home': 'home_rolling_avg_explosive_rate',
+        'rolling_avg_explosive_rate_pre_game_away': 'away_rolling_avg_explosive_rate',
+        'rolling_avg_success_rate_pre_game_home': 'home_rolling_avg_success_rate',
+        'rolling_avg_success_rate_pre_game_away': 'away_rolling_avg_success_rate',
+        'rolling_avg_rush_epa_pre_game_home': 'home_rolling_avg_rush_epa',
+        'rolling_avg_rush_epa_pre_game_away': 'away_rolling_avg_rush_epa',
+        'rolling_avg_pass_epa_pre_game_home': 'home_rolling_avg_pass_epa',
+        'rolling_avg_pass_epa_pre_game_away': 'away_rolling_avg_pass_epa',
+        'rolling_avg_cpoe_pre_game_home': 'home_rolling_avg_cpoe',
+        'rolling_avg_cpoe_pre_game_away': 'away_rolling_avg_cpoe',
     }
     game_features = game_features.rename(columns=feature_mapping)
 
     game_features = add_engineered_features(game_features)
 
+    # Injury features (current week)
+    temp = game_features[["team_home", "team_away"]].rename(
+        columns={"team_home": "home_team", "team_away": "away_team"}
+    ).copy()
+    temp = get_upcoming_injury_features(temp, injuries)
+    for col in ["home_injury_index", "away_injury_index", "home_qb_injured", "away_qb_injured"]:
+        game_features[col] = temp[col].values
+
+    # Line movement (informational — not a model feature)
+    game_features = _get_line_movement(game_features)
+
+    # Referee tendency
+    if ref_stats is not None and games is not None:
+        temp = game_features[["team_home", "team_away"]].rename(
+            columns={"team_home": "home_team", "team_away": "away_team"}
+        ).copy()
+        game_features["ref_avg_total"] = get_upcoming_referee_feature(
+            temp, games, ref_stats, ref_global_mean or game_features["total_line"].mean()
+        ).values
+    else:
+        game_features["ref_avg_total"] = game_features["total_line"].mean()
+
     # Predict totals
     feature_cols = get_model_features()
-    game_features['predicted_total'] = game_features['total_line'] + model.predict(game_features[feature_cols])
+    game_features['p_over'] = model.predict_proba(game_features[feature_cols])[:, 1]
 
     return game_features
