@@ -1,6 +1,10 @@
+import logging
 import os
 import pandas as pd
 from meteostat import Point, Daily
+
+logger = logging.getLogger(__name__)
+
 
 def create_weather_features(team_games, cache_dir="data/weather_cache"):
     """
@@ -109,5 +113,5 @@ def create_weather_features(team_games, cache_dir="data/weather_cache"):
     team_games['home_temperature'] = pd.to_numeric(team_games['home_temperature'], errors='coerce')
     team_games['home_wind_speed'] = pd.to_numeric(team_games['home_wind_speed'], errors='coerce')
 
-    print("Weather features created.")
+    logger.info("Weather features created.")
     return team_games

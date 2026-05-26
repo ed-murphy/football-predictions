@@ -1,3 +1,7 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def create_qb_features(team_games, plays):
     """
@@ -85,6 +89,6 @@ def create_qb_features(team_games, plays):
     team_games = team_games.merge(home_qb_features, on='game_id', how='left')
     team_games = team_games.merge(away_qb_features, on='game_id', how='left')
 
-    print("QB EPA features created.")
+    logger.info("QB EPA features created.")
 
     return team_games, latest_qb_epa

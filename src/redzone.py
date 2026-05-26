@@ -1,4 +1,8 @@
+import logging
 import pandas as pd
+
+logger = logging.getLogger(__name__)
+
 
 def create_red_zone(team_games: pd.DataFrame, plays: pd.DataFrame) -> pd.DataFrame:
     """
@@ -95,6 +99,6 @@ def create_red_zone(team_games: pd.DataFrame, plays: pd.DataFrame) -> pd.DataFra
     team_games = team_games.merge(home_features, on="game_id", how="left")
     team_games = team_games.merge(away_features, on="game_id", how="left")
 
-    print("Red zone rolling efficiency features created: home_rolling_rz_eff, away_rolling_rz_eff")
+    logger.info("Red zone rolling efficiency features created: home_rolling_rz_eff, away_rolling_rz_eff")
 
     return team_games

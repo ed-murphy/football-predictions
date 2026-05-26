@@ -1,10 +1,31 @@
+import logging
 import os
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+from config import WEATHER_FORECAST_PATH, API_MAX_RETRIES, API_BACKOFF_FACTOR
 
-WEATHER_PATH = "data/nfl_weather_forecasts.csv"
+logger = logging.getLogger(__name__)
+
+WEATHER_PATH = WEATHER_FORECAST_PATH
+
+
+def _session() -> requests.Session:
+    """Return a requests Session with automatic retry on transient errors."""
+    s = requests.Session()
+    retry = Retry(
+        total=API_MAX_RETRIES,
+        backoff_factor=API_BACKOFF_FACTOR,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
 
 # Mapping full team names -> 3-letter abbreviations
 TEAM_ABBREV = {
@@ -85,7 +106,7 @@ def fetch_game_weather(home_team, kickoff_time, api_key):
             f"http://api.openweathermap.org/data/2.5/forecast"
             f"?lat={coords['lat']}&lon={coords['lon']}&appid={api_key}&units=imperial"
         )
-        response = requests.get(url)
+        response = _session().get(url, timeout=30)
         response.raise_for_status()
         data = response.json()
         forecasts = data["list"]
@@ -107,7 +128,7 @@ def fetch_game_weather(home_team, kickoff_time, api_key):
         }
 
     except Exception as e:
-        print(f"[ERROR] Weather fetch failed for {home_team} at {kickoff_time}: {e}")
+        logger.error("Weather fetch failed for %s at %s: %s", home_team, kickoff_time, e)
         return None
 
 def get_forecasted_weather(upcoming_team_games: pd.DataFrame) -> pd.DataFrame:
@@ -116,16 +137,22 @@ def get_forecasted_weather(upcoming_team_games: pd.DataFrame) -> pd.DataFrame:
     api_key = os.getenv("API_KEY_WEATHER")
     if not api_key:
         raise ValueError("Missing API_KEY_WEATHER in .env file")
-    
+
     if os.path.exists(WEATHER_PATH):
-        print(f"Reading cached weather forecast for upcoming games from {WEATHER_PATH}...")
         df = pd.read_csv(WEATHER_PATH, parse_dates=['kickoff_time'])
-        # Ensure units are correct if reloading cached data
-        if "temperature_F" in df.columns:
-            df["temperature"] = (df["temperature_F"] - 32) * 5.0 / 9.0
-        if "wind_speed_mph" in df.columns:
-            df["wind_speed"] = df["wind_speed_mph"] * 1.60934
-        return df
+        # Staleness check: if the cached games don't overlap with this week's games, re-fetch
+        cache_home_teams = set(df['home_team'].dropna())
+        upcoming_home_teams = set(upcoming_team_games['home_team'].dropna())
+        if not cache_home_teams.intersection(upcoming_home_teams):
+            logger.info("Weather cache is stale (no overlap with upcoming games). Re-fetching...")
+            os.remove(WEATHER_PATH)
+        else:
+            logger.info("Reading cached weather forecast for upcoming games from %s...", WEATHER_PATH)
+            if "temperature_F" in df.columns:
+                df["temperature"] = (df["temperature_F"] - 32) * 5.0 / 9.0
+            if "wind_speed_mph" in df.columns:
+                df["wind_speed"] = df["wind_speed_mph"] * 1.60934
+            return df
 
     upcoming_team_games = upcoming_team_games.copy()
     upcoming_team_games['kickoff_time'] = pd.to_datetime(upcoming_team_games['commence_time'], utc=True)
@@ -137,7 +164,6 @@ def get_forecasted_weather(upcoming_team_games: pd.DataFrame) -> pd.DataFrame:
             weather_data.append(result)
 
     df = pd.DataFrame(weather_data)
-    # No mapping needed, already abbreviations
     df.to_csv(WEATHER_PATH, index=False)
-    print(f"Saved weather forecast for upcoming games to {WEATHER_PATH}")
+    logger.info("Saved weather forecast for upcoming games to %s", WEATHER_PATH)
     return df

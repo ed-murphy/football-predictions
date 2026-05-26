@@ -1,6 +1,10 @@
+import logging
 import os
 import re
 import pandas as pd
+
+logger = logging.getLogger(__name__)
+
 
 def get_existing_predictions(predictions_dir="predictions"):
     """
@@ -8,14 +12,13 @@ def get_existing_predictions(predictions_dir="predictions"):
     Returns its contents as a pandas DataFrame, or an empty DataFrame if no files exist.
     """
     if not os.path.exists(predictions_dir):
-        print(f"No directory found at {predictions_dir}")
-        return pd.DataFrame()  # return empty DataFrame
-    
-    # List all matching prediction files
+        logger.info("No directory found at %s", predictions_dir)
+        return pd.DataFrame()
+
     files = [f for f in os.listdir(predictions_dir) if re.match(r"predictions_\d{8}(_v\d+)?\.csv", f)]
     if not files:
-        print("No prediction files found.")
-        return pd.DataFrame()  # return empty DataFrame
+        logger.info("No prediction files found.")
+        return pd.DataFrame()
 
     # Function to sort by date and version number
     def file_key(f):
@@ -34,5 +37,5 @@ def get_existing_predictions(predictions_dir="predictions"):
     if 'date' in df.columns:
         df['date'] = pd.to_datetime(df['date']).dt.date
     
-    print(f"Loaded existing predictions from {latest_path}")
+    logger.info("Loaded existing predictions from %s", latest_path)
     return df

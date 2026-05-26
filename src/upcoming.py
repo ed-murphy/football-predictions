@@ -1,8 +1,50 @@
+import logging
+import glob
+import os
 import pandas as pd
 import pytz
+from datetime import datetime, timedelta
+from src.model_features import add_engineered_features, get_model_features
+from src.injuries import get_upcoming_injury_features
+from src.referee import get_upcoming_referee_feature
+from config import LINE_SNAPSHOTS_DIR
+
+logger = logging.getLogger(__name__)
+
+
+def _get_line_movement(game_features: pd.DataFrame) -> pd.DataFrame:
+    """Merge opening line and compute movement vs current line."""
+    game_features['line_open'] = None
+    game_features['line_movement'] = None
+
+    if not os.path.exists(LINE_SNAPSHOTS_DIR):
+        return game_features
+
+    files = sorted(glob.glob(os.path.join(LINE_SNAPSHOTS_DIR, "lines_*.csv")))
+    cutoff = datetime.today() - timedelta(days=7)
+    recent = [
+        f for f in files
+        if datetime.strptime(os.path.basename(f)[6:14], "%Y%m%d") >= cutoff
+    ]
+    if not recent:
+        return game_features
+
+    opening = (
+        pd.read_csv(recent[0])[["home_team", "away_team", "total_line"]]
+        .rename(columns={"home_team": "snap_home", "away_team": "snap_away", "total_line": "line_open"})
+    )
+    game_features = game_features.merge(
+        opening, left_on=["team_home", "team_away"], right_on=["snap_home", "snap_away"], how="left"
+    ).drop(columns=["snap_home", "snap_away"], errors="ignore")
+    game_features["line_movement"] = game_features["total_line"] - game_features["line_open"]
+    logger.info("Line movement computed from snapshot: %s", recent[0])
+    return game_features
+
 
 def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
-                                weather_features, model, existing_predictions=None):
+                                weather_features, model, existing_predictions=None,
+                                injuries=None, games=None, ref_stats=None,
+                                ref_global_mean=None):
     """
     Build one row per upcoming game with home/away features and forecasted weather.
     All datetime columns are tz-naive to prevent comparison errors.
@@ -54,7 +96,7 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
         upcoming_games = upcoming_games.drop(columns=['_merge', 'pred_date'], errors='ignore')
 
         if upcoming_games.empty:
-            print("All upcoming games are already in existing predictions.")
+            logger.info("All upcoming games are already in existing predictions.")
             return pd.DataFrame()
 
     # Divisional matchups
@@ -99,18 +141,47 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
     # Rest features
     upcoming_games['both_short_rest'] = ((upcoming_games['home_short_rest'] == 1) & (upcoming_games['away_short_rest'] == 1)).astype(int)
 
+    # --- Post-bye flag: compute from last historical game date vs upcoming date ---
+    last_game = (
+        team_games_hist
+        .sort_values('date')
+        .groupby('team')['date']
+        .last()
+        .reset_index()
+        .rename(columns={'date': 'last_game_date'})
+    )
+    last_game['last_game_date'] = pd.to_datetime(last_game['last_game_date']).dt.tz_localize(None)
+
+    upcoming_dt = pd.to_datetime(upcoming_games['commence_time'], utc=True).dt.tz_localize(None)
+
+    # Home post-bye
+    upcoming_games = upcoming_games.merge(last_game.rename(columns={'team': 'home_team'}),
+                                          on='home_team', how='left')
+    home_gap = (upcoming_dt - upcoming_games['last_game_date'].values).dt.days
+    upcoming_games['home_post_bye'] = ((home_gap >= 11) & (home_gap <= 21)).astype(int)
+    upcoming_games.drop(columns=['last_game_date'], inplace=True)
+
+    # Away post-bye
+    upcoming_games = upcoming_games.merge(last_game.rename(columns={'team': 'away_team'}),
+                                          on='away_team', how='left')
+    away_gap = (upcoming_dt - upcoming_games['last_game_date'].values).dt.days
+    upcoming_games['away_post_bye'] = ((away_gap >= 11) & (away_gap <= 21)).astype(int)
+    upcoming_games.drop(columns=['last_game_date'], inplace=True)
+
     upcoming_games = upcoming_games.loc[:, ~upcoming_games.columns.duplicated()]
 
     # Split home/away for features
     home = upcoming_games[['commence_time', 'home_team', 'away_team', 'total_line',
                            'home_rolling_avg_qb_epa', 'divisional', 'regular_season',
-                           'international', 'home_short_rest', 'away_short_rest', 'both_short_rest']].copy()
+                           'international', 'home_short_rest', 'away_short_rest', 'both_short_rest',
+                           'home_post_bye', 'away_post_bye']].copy()
     home.rename(columns={'home_team':'team', 'away_team':'opponent', 'commence_time':'date'}, inplace=True)
     home['is_home'] = 1
 
     away = upcoming_games[['commence_time', 'away_team', 'home_team', 'total_line',
                            'away_rolling_avg_qb_epa', 'divisional', 'regular_season',
-                           'international', 'home_short_rest', 'away_short_rest', 'both_short_rest']].copy()
+                           'international', 'home_short_rest', 'away_short_rest', 'both_short_rest',
+                           'home_post_bye', 'away_post_bye']].copy()
     away.rename(columns={'away_team':'team', 'home_team':'opponent', 'commence_time':'date'}, inplace=True)
     away['is_home'] = 0
 
@@ -127,7 +198,10 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
     # Merge rolling averages from historical team games
     rolling_features = [
         'rolling_avg_points_for', 'rolling_avg_points_against',
-        'rolling_avg_def_epa', 'rolling_avg_off_pace', 'rolling_rz_eff'
+        'rolling_avg_def_epa', 'rolling_avg_sack_rate', 'rolling_avg_off_pace',
+        'rolling_rz_eff', 'rolling_avg_turnovers', 'rolling_avg_3rd_pct',
+        'rolling_avg_pass_rate', 'rolling_avg_explosive_rate', 'rolling_avg_success_rate',
+        'rolling_avg_rush_epa', 'rolling_avg_pass_epa', 'rolling_avg_cpoe',
     ]
     for feat in rolling_features:
         last_vals = team_games_hist.groupby('team')[feat].last().reset_index()
@@ -166,7 +240,9 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
         'international_home': 'international',
         'home_short_rest_home': 'home_short_rest',
         'away_short_rest_home': 'away_short_rest',
-        'both_short_rest_home': 'both_short_rest'
+        'both_short_rest_home': 'both_short_rest',
+        'home_post_bye_home': 'home_post_bye',
+        'away_post_bye_home': 'away_post_bye',
     }, inplace=True)
 
     # Rename total_line from home so it exists
@@ -175,7 +251,8 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
     # Cleanup only truly redundant columns
     drop_cols = [
         'opponent_home', 'opponent_away', 'total_line_away', 'divisional_away', 'regular_season_away',
-        'international_away','home_short_rest_away','away_short_rest_away','both_short_rest_away'
+        'international_away', 'home_short_rest_away', 'away_short_rest_away', 'both_short_rest_away',
+        'home_post_bye_away', 'away_post_bye_away',
     ]
     game_features.drop(columns=drop_cols, inplace=True, errors='ignore')
 
@@ -190,33 +267,67 @@ def prepare_upcoming_team_games(upcoming_games, team_games_hist, latest_qb_epa,
         'away_rolling_avg_qb_epa': 'away_rolling_avg_qb_epa',
         'rolling_avg_def_epa_pre_game_home': 'home_rolling_avg_def_epa',
         'rolling_avg_def_epa_pre_game_away': 'away_rolling_avg_def_epa',
+        'rolling_avg_sack_rate_pre_game_home': 'home_rolling_avg_sack_rate',
+        'rolling_avg_sack_rate_pre_game_away': 'away_rolling_avg_sack_rate',
         'temperature': 'home_temperature',
         'wind_speed': 'home_wind_speed',
         'rolling_avg_off_pace_pre_game_home': 'home_rolling_avg_off_pace',
         'rolling_avg_off_pace_pre_game_away': 'away_rolling_avg_off_pace',
         'divisional': 'divisional',
         'regular_season': 'regular_season',
-        'international' : 'international',
+        'international': 'international',
         'home_short_rest': 'home_short_rest',
         'away_short_rest': 'away_short_rest',
         'both_short_rest': 'both_short_rest',
-        'rolling_rz_eff_pre_game_home' : 'home_rolling_rz_eff',
-        'rolling_rz_eff_pre_game_away' : 'away_rolling_rz_eff'
+        'home_post_bye': 'home_post_bye',
+        'away_post_bye': 'away_post_bye',
+        'rolling_rz_eff_pre_game_home': 'home_rolling_rz_eff',
+        'rolling_rz_eff_pre_game_away': 'away_rolling_rz_eff',
+        'rolling_avg_turnovers_pre_game_home': 'home_rolling_avg_turnovers',
+        'rolling_avg_turnovers_pre_game_away': 'away_rolling_avg_turnovers',
+        'rolling_avg_3rd_pct_pre_game_home': 'home_rolling_avg_3rd_pct',
+        'rolling_avg_3rd_pct_pre_game_away': 'away_rolling_avg_3rd_pct',
+        'rolling_avg_pass_rate_pre_game_home': 'home_rolling_avg_pass_rate',
+        'rolling_avg_pass_rate_pre_game_away': 'away_rolling_avg_pass_rate',
+        'rolling_avg_explosive_rate_pre_game_home': 'home_rolling_avg_explosive_rate',
+        'rolling_avg_explosive_rate_pre_game_away': 'away_rolling_avg_explosive_rate',
+        'rolling_avg_success_rate_pre_game_home': 'home_rolling_avg_success_rate',
+        'rolling_avg_success_rate_pre_game_away': 'away_rolling_avg_success_rate',
+        'rolling_avg_rush_epa_pre_game_home': 'home_rolling_avg_rush_epa',
+        'rolling_avg_rush_epa_pre_game_away': 'away_rolling_avg_rush_epa',
+        'rolling_avg_pass_epa_pre_game_home': 'home_rolling_avg_pass_epa',
+        'rolling_avg_pass_epa_pre_game_away': 'away_rolling_avg_pass_epa',
+        'rolling_avg_cpoe_pre_game_home': 'home_rolling_avg_cpoe',
+        'rolling_avg_cpoe_pre_game_away': 'away_rolling_avg_cpoe',
     }
     game_features = game_features.rename(columns=feature_mapping)
 
-    # Add interaction terms
-    game_features['home_x_away_pace'] = game_features['home_rolling_avg_off_pace'] * game_features['away_rolling_avg_off_pace']
-    game_features['home_pace_x_wind_speed'] = game_features['home_rolling_avg_off_pace'] * game_features['home_wind_speed']
-    game_features['away_pace_x_wind_speed'] = game_features['away_rolling_avg_off_pace'] * game_features['home_wind_speed']
-    game_features['home_qb_x_away_def'] = game_features['home_rolling_avg_qb_epa'] * game_features['away_rolling_avg_def_epa']
-    game_features['away_qb_x_home_def'] = game_features['away_rolling_avg_qb_epa'] * game_features['home_rolling_avg_def_epa']
+    game_features = add_engineered_features(game_features)
+
+    # Injury features (current week)
+    temp = game_features[["team_home", "team_away"]].rename(
+        columns={"team_home": "home_team", "team_away": "away_team"}
+    ).copy()
+    temp = get_upcoming_injury_features(temp, injuries)
+    for col in ["home_injury_index", "away_injury_index", "home_qb_injured", "away_qb_injured"]:
+        game_features[col] = temp[col].values
+
+    # Line movement (informational — not a model feature)
+    game_features = _get_line_movement(game_features)
+
+    # Referee tendency
+    if ref_stats is not None and games is not None:
+        temp = game_features[["team_home", "team_away"]].rename(
+            columns={"team_home": "home_team", "team_away": "away_team"}
+        ).copy()
+        game_features["ref_avg_total"] = get_upcoming_referee_feature(
+            temp, games, ref_stats, ref_global_mean or game_features["total_line"].mean()
+        ).values
+    else:
+        game_features["ref_avg_total"] = game_features["total_line"].mean()
 
     # Predict totals
-    feature_cols = list(feature_mapping.values()) + [
-        'home_x_away_pace','home_pace_x_wind_speed','away_pace_x_wind_speed',
-        'home_qb_x_away_def','away_qb_x_home_def'
-    ]
-    game_features['predicted_total'] = game_features['total_line'] + model.predict(game_features[feature_cols])
+    feature_cols = get_model_features()
+    game_features['p_over'] = model.predict_proba(game_features[feature_cols])[:, 1]
 
     return game_features

@@ -1,6 +1,11 @@
+import logging
 import pandas as pd
 import os
 from datetime import datetime
+from config import PROB_THRESHOLD
+
+logger = logging.getLogger(__name__)
+
 
 def save_predictions(existing_predictions: pd.DataFrame,
                      upcoming_team_games: pd.DataFrame,
@@ -12,7 +17,7 @@ def save_predictions(existing_predictions: pd.DataFrame,
     Saves output to predictions/predictions_YYYYMMDD[_vN].csv
     """
     if upcoming_team_games is None or upcoming_team_games.empty:
-        print("No new upcoming games to predict. Exiting function.")
+        logger.info("No new upcoming games to predict. Exiting function.")
         return None
 
     existing_predictions = existing_predictions.copy()
@@ -24,22 +29,45 @@ def save_predictions(existing_predictions: pd.DataFrame,
     upcoming_team_games['date'] = pd.to_datetime(upcoming_team_games['date']).dt.strftime('%Y-%m-%d')
 
     col_map = {
-        'date' : 'date',
-        'team_home' : 'home_team',
-        'team_away' : 'away_team',
-        'total_line' : 'total_line',
-        'predicted_total' : 'predicted_total'
+        'date'            : 'date',
+        'team_home'       : 'home_team',
+        'team_away'       : 'away_team',
+        'total_line'      : 'total_line',
+        'p_over'          : 'p_over',
+        'line_open'       : 'line_open',
+        'line_movement'   : 'line_movement',
+        'home_qb_injured' : 'home_qb_injured',
+        'away_qb_injured' : 'away_qb_injured',
     }
 
-    new_rows = upcoming_team_games[list(col_map.keys())].rename(columns=col_map)
+    new_rows = upcoming_team_games[[
+        c for c in col_map.keys() if c in upcoming_team_games.columns
+    ]].rename(columns=col_map)
 
-    new_rows = new_rows.loc[:, [c for c in new_rows.columns if c in existing_predictions.columns]]
+    # Keep all new_rows columns — don't drop informational ones missing from history
+    new_rows = new_rows.loc[:, [c for c in new_rows.columns
+                                if c in existing_predictions.columns
+                                or c in ('line_open', 'line_movement',
+                                         'home_qb_injured', 'away_qb_injured',
+                                         'p_over')]]
 
     combined = pd.concat([existing_predictions, new_rows], ignore_index=True)
 
     combined = combined.drop_duplicates(subset=['date', 'home_team', 'away_team'], keep='last')
 
-    combined['predicted_total'] = pd.to_numeric(combined['predicted_total'], errors='coerce')
+    combined['p_over'] = pd.to_numeric(combined['p_over'], errors='coerce')
+
+    # Bet signal based on probability threshold
+    def _bet(p):
+        if pd.isna(p):
+            return ''
+        if p > PROB_THRESHOLD:
+            return 'Over'
+        if p < 1 - PROB_THRESHOLD:
+            return 'Under'
+        return ''
+
+    combined['bet'] = combined['p_over'].apply(_bet)
 
     combined['date'] = pd.to_datetime(combined['date']).dt.strftime('%Y-%m-%d')
     games['gameday'] = pd.to_datetime(games['gameday']).dt.strftime('%Y-%m-%d')
@@ -57,7 +85,7 @@ def save_predictions(existing_predictions: pd.DataFrame,
 
     combined = combined.drop(columns=['gameday'], errors='ignore')
 
-    combined['predicted_total'] = combined['predicted_total'].round(1)
+    combined['p_over'] = combined['p_over'].round(3)
 
     os.makedirs(predictions_dir, exist_ok=True)
 
@@ -72,6 +100,6 @@ def save_predictions(existing_predictions: pd.DataFrame,
 
     combined.to_csv(filepath, index=False)
 
-    print(f"Predictions saved to {filepath}")
+    logger.info("Predictions saved to %s", filepath)
 
     return combined
