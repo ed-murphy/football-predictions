@@ -147,6 +147,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_only", action="store_true",
                         help="Train and save models without making predictions")
+    parser.add_argument("--predict_only", action="store_true",
+                        help="Generate predictions using the saved model without retraining")
     parser.add_argument("--use_cached_totals", action="store_true",
                         help="Skip fetching new totals, use cached CSV")
     args = parser.parse_args()
@@ -157,8 +159,9 @@ if __name__ == "__main__":
         run_training(team_games)
         sys.exit(0)
 
-    # Prediction mode — load saved model, no retraining.
-    # team_games is passed so get_totals can auto-populate QB/rest/international fields.
+    if not args.predict_only:
+        run_training(team_games)
+
     totals = get_totals(use_cache_only=args.use_cached_totals, team_games=team_games)
 
     run_predictions(totals, games, team_games, latest_qb_epa, injuries=injuries,
