@@ -140,6 +140,10 @@ def get_totals_from_api(api_key=API_KEY):
     next_tuesday = (now_eastern + timedelta(days=days_ahead)).replace(
         hour=23, minute=59, second=59, microsecond=0
     )
+    # During the off-season, odds may be posted months ahead; extend the window
+    # to 120 days so we don't filter out early-season games posted in the spring/summer.
+    far_future = now_eastern + timedelta(days=120)
+    cutoff = max(next_tuesday, far_future)
 
     for game in data:
         if not game.get('bookmakers'):
@@ -149,7 +153,7 @@ def get_totals_from_api(api_key=API_KEY):
         commence_time_utc = datetime.fromisoformat(game['commence_time'].replace("Z", "+00:00"))
         commence_time_eastern = commence_time_utc.astimezone(eastern)
 
-        if commence_time_eastern > next_tuesday:
+        if commence_time_eastern > cutoff:
             continue
 
         # Only consider DraftKings
@@ -195,6 +199,12 @@ def get_totals(path=DATA_PATH, api_key=API_KEY, use_cache_only=False, team_games
         # Get new data
         logger.info("Fetching new and updated game totals from API...")
         new_df = get_totals_from_api(api_key)
+
+        if new_df.empty:
+            logger.warning("API returned no games (off-season or no upcoming games). Using cached totals only.")
+            result = enrich_totals(existing_df, team_games)
+            result.to_csv(path, index=False)
+            return result
 
         # Normalize new datetime
         new_df['commence_time'] = pd.to_datetime(new_df['commence_time'], utc=True)

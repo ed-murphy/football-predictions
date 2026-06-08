@@ -45,13 +45,18 @@ def save_predictions(existing_predictions: pd.DataFrame,
     ]].rename(columns=col_map)
 
     # Keep all new_rows columns — don't drop informational ones missing from history
+    core_cols = {'date', 'home_team', 'away_team', 'total_line', 'p_over',
+                 'line_open', 'line_movement', 'home_qb_injured', 'away_qb_injured'}
     new_rows = new_rows.loc[:, [c for c in new_rows.columns
                                 if c in existing_predictions.columns
-                                or c in ('line_open', 'line_movement',
-                                         'home_qb_injured', 'away_qb_injured',
-                                         'p_over')]]
+                                or c in core_cols]]
 
     combined = pd.concat([existing_predictions, new_rows], ignore_index=True)
+
+    # Drop stale predictions (games more than 7 days in the past)
+    combined['date'] = pd.to_datetime(combined['date'])
+    cutoff = pd.Timestamp.today().normalize() - pd.Timedelta(days=7)
+    combined = combined[combined['date'] >= cutoff]
 
     combined = combined.drop_duplicates(subset=['date', 'home_team', 'away_team'], keep='last')
 

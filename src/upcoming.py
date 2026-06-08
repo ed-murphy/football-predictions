@@ -14,10 +14,9 @@ logger = logging.getLogger(__name__)
 
 def _get_line_movement(game_features: pd.DataFrame) -> pd.DataFrame:
     """Merge opening line and compute movement vs current line."""
-    game_features['line_open'] = None
-    game_features['line_movement'] = None
-
     if not os.path.exists(LINE_SNAPSHOTS_DIR):
+        game_features['line_open'] = None
+        game_features['line_movement'] = None
         return game_features
 
     files = sorted(glob.glob(os.path.join(LINE_SNAPSHOTS_DIR, "lines_*.csv")))
@@ -27,6 +26,8 @@ def _get_line_movement(game_features: pd.DataFrame) -> pd.DataFrame:
         if datetime.strptime(os.path.basename(f)[6:14], "%Y%m%d") >= cutoff
     ]
     if not recent:
+        game_features['line_open'] = None
+        game_features['line_movement'] = None
         return game_features
 
     opening = (
@@ -36,6 +37,10 @@ def _get_line_movement(game_features: pd.DataFrame) -> pd.DataFrame:
     game_features = game_features.merge(
         opening, left_on=["team_home", "team_away"], right_on=["snap_home", "snap_away"], how="left"
     ).drop(columns=["snap_home", "snap_away"], errors="ignore")
+    if game_features["line_open"].isna().all():
+        logger.warning("No matching line snapshot rows found; skipping line movement computation.")
+        game_features['line_movement'] = None
+        return game_features
     game_features["line_movement"] = game_features["total_line"] - game_features["line_open"]
     logger.info("Line movement computed from snapshot: %s", recent[0])
     return game_features
