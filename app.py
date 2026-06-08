@@ -63,14 +63,14 @@ display_df = display_df.rename(columns={
     "home_team":       "Home",
     "away_team":       "Away",
     "total_line":      "Total Line",
-    "p_over":          "P(Over)",
+    "p_over":          "Probability of Over",
     "bet":             "Bet",
     "actual_total":    "Actual",
     "home_qb_injured": "Home QB Inj",
     "away_qb_injured": "Away QB Inj",
 })
 
-cols_to_show = ["Game Date", "Home", "Away", "Total Line", "P(Over)", "Bet", "Home QB Inj", "Away QB Inj", "Actual"]
+cols_to_show = ["Game Date", "Home", "Away", "Total Line", "Probability of Over", "Bet"]
 cols_to_show = [c for c in cols_to_show if c in display_df.columns]
 
 st.markdown(
