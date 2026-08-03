@@ -47,15 +47,13 @@ STADIUM_COORDS = {
     "TEN": (36.1662, -86.7713), "WAS": (38.9076, -77.0209),
 }
 
-# Teams whose home games are always played indoors (roof column is unreliable for
-# upcoming games, so this is the fallback used when building forecast features).
-DOME_TEAMS = {"ARI", "ATL", "DAL", "DET", "HOU", "IND", "LV", "LA", "MIN", "NO"}
+# Teams whose own stadium is indoors. Only a fallback: the venue a game is played
+# at comes from the schedule (see src/venues.py), and this is used when a fixture
+# has no schedule row yet.
+DOME_TEAMS = {"ARI", "ATL", "DAL", "DET", "HOU", "IND", "LV", "LA", "LAC", "MIN", "NO"}
 
 # nflverse `roof` values that mean "no weather"
 INDOOR_ROOFS = {"dome", "closed"}
-
-INTERNATIONAL_STADIUM_IDS = {"LON02", "LON00", "LON01", "GER00", "GER01", "MEX00",
-                             "FRA00", "BRA00", "ESP00"}
 
 # Neutral values substituted for indoor games so the model sees a constant
 # rather than a missing value.

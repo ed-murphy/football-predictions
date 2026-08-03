@@ -46,7 +46,8 @@ CONTEXT_FEATURES = [
     "is_dome",
     "divisional",
     "regular_season",
-    "international",
+    "international",   # played outside the US: long travel, unusual body clock
+    "neutral_site",    # includes domestic neutral games, where international is 0
     "both_short_rest",
     "ref_avg_total",
     "season_week",

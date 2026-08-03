@@ -16,9 +16,6 @@ from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from src.constants import (
-    DOME_TEAMS, INDOOR_TEMP_F, INDOOR_WIND_MPH, STADIUM_COORDS, TEAM_ABBREV,
-)
 from config import API_BACKOFF_FACTOR, API_MAX_RETRIES, WEATHER_FORECAST_PATH
 
 logger = logging.getLogger(__name__)
@@ -42,29 +39,10 @@ def _session() -> requests.Session:
     return session
 
 
-def _to_abbrev(team: str) -> str:
-    """Accept either a full team name or an abbreviation."""
-    return TEAM_ABBREV.get(team, team)
-
-
-def fetch_stadium_forecast(team: str, kickoff_times: list[pd.Timestamp], api_key: str,
-                           session: requests.Session) -> list[dict]:
-    """Forecast at each kickoff for one stadium. One API call per venue, not per game."""
-    abbrev = _to_abbrev(team)
-
-    if abbrev in DOME_TEAMS:
-        return [
-            {"home_team": abbrev, "kickoff_time": t, "temperature": INDOOR_TEMP_F,
-             "wind_speed": INDOOR_WIND_MPH, "weather_status": "indoor/dome"}
-            for t in kickoff_times
-        ]
-
-    coords = STADIUM_COORDS.get(abbrev)
-    if coords is None:
-        logger.warning("No stadium coordinates for %s; skipping forecast.", team)
-        return []
-
-    lat, lon = coords
+def fetch_venue_forecast(venue_key: str, lat: float, lon: float,
+                         kickoff_times: list[pd.Timestamp], api_key: str,
+                         session: requests.Session) -> list[dict]:
+    """Forecast at each kickoff for one venue. One API call per venue, not per game."""
     try:
         response = session.get(
             FORECAST_URL,
@@ -73,8 +51,8 @@ def fetch_stadium_forecast(team: str, kickoff_times: list[pd.Timestamp], api_key
         )
         response.raise_for_status()
         slots = response.json()["list"]
-    except Exception as exc:  # network, auth, or schema change — degrade, don't crash
-        logger.error("Weather fetch failed for %s: %s", team, exc)
+    except Exception as exc:  # network, auth, or schema change: degrade, don't crash
+        logger.error("Weather fetch failed for %s: %s", venue_key, exc)
         return []
 
     rows = []
@@ -89,48 +67,56 @@ def fetch_stadium_forecast(team: str, kickoff_times: list[pd.Timestamp], api_key
         if gap_hours > 24 * FORECAST_HORIZON_DAYS:
             logger.info(
                 "%s kickoff %s is beyond the forecast horizon; leaving weather unknown.",
-                abbrev, kickoff,
+                venue_key, kickoff,
             )
             continue
         rows.append({
-            "home_team": abbrev,
+            "venue_key": venue_key,
             "kickoff_time": kickoff,
-            "temperature": closest["main"]["temp"],          # already Fahrenheit
+            "temperature": closest["main"]["temp"],           # already Fahrenheit
             "wind_speed": closest["wind"].get("speed", 0.0),  # already mph
             "weather_status": closest["weather"][0]["description"],
         })
     return rows
 
 
-def get_forecasted_weather(upcoming_games: pd.DataFrame) -> pd.DataFrame:
-    """Return one forecast row per upcoming game, using a cached CSV when it is fresh.
+def get_forecasted_weather(venue_requests: pd.DataFrame) -> pd.DataFrame:
+    """Kickoff forecasts for a set of venues.
 
-    Columns: home_team (abbrev), kickoff_time (UTC), temperature (F),
-    wind_speed (mph), weather_status.
+    Takes one row per (venue, kickoff) with columns `venue_key`, `venue_lat`,
+    `venue_lon` and `kickoff_time`. Keying on the venue rather than the home team
+    is what lets a neutral-site game get the weather where it is actually played.
+
+    Returns `venue_key`, `kickoff_time` (UTC), `temperature` (F), `wind_speed`
+    (mph), `weather_status`.
     """
+    if venue_requests is None or venue_requests.empty:
+        return _empty_forecast()
+
     load_dotenv()
     api_key = os.getenv("API_KEY_WEATHER")
 
-    upcoming = upcoming_games.copy()
-    upcoming["home_team"] = upcoming["home_team"].map(_to_abbrev)
-    upcoming["kickoff_time"] = pd.to_datetime(upcoming["commence_time"], utc=True)
+    requests_df = venue_requests.copy()
+    requests_df["kickoff_time"] = pd.to_datetime(requests_df["kickoff_time"], utc=True)
 
-    cached = _read_cache(set(upcoming["home_team"].dropna()))
+    cached = _read_cache(set(requests_df["venue_key"].dropna()))
     if cached is not None:
         return cached
 
     if not api_key:
         logger.warning(
-            "Missing API_KEY_WEATHER — upcoming games will use seasonal-normal weather."
+            "Missing API_KEY_WEATHER; upcoming games will use seasonal-normal weather."
         )
         return _empty_forecast()
 
     session = _session()
     rows: list[dict] = []
-    for team, group in upcoming.groupby("home_team"):
-        rows.extend(
-            fetch_stadium_forecast(team, list(group["kickoff_time"]), api_key, session)
-        )
+    for (venue_key, lat, lon), group in requests_df.groupby(
+        ["venue_key", "venue_lat", "venue_lon"]
+    ):
+        rows.extend(fetch_venue_forecast(
+            venue_key, lat, lon, list(group["kickoff_time"]), api_key, session
+        ))
 
     forecast = pd.DataFrame(rows, columns=_empty_forecast().columns)
     os.makedirs(os.path.dirname(WEATHER_FORECAST_PATH) or ".", exist_ok=True)
@@ -141,21 +127,23 @@ def get_forecasted_weather(upcoming_games: pd.DataFrame) -> pd.DataFrame:
 
 def _empty_forecast() -> pd.DataFrame:
     return pd.DataFrame(
-        columns=["home_team", "kickoff_time", "temperature", "wind_speed", "weather_status"]
+        columns=["venue_key", "kickoff_time", "temperature", "wind_speed", "weather_status"]
     )
 
 
-def _read_cache(upcoming_home_teams: set[str]) -> pd.DataFrame | None:
-    """Return the cached forecast if it still covers the games we're predicting."""
+def _read_cache(wanted_venues: set[str]) -> pd.DataFrame | None:
+    """Return the cached forecast if it still covers the venues we're predicting."""
     if not os.path.exists(WEATHER_FORECAST_PATH):
         return None
 
     cached = pd.read_csv(WEATHER_FORECAST_PATH, parse_dates=["kickoff_time"])
-    if cached.empty:
+    if cached.empty or "venue_key" not in cached.columns:
+        # Written by an older version keyed on home_team; not usable.
+        logger.info("Discarding weather cache in an old format.")
+        os.remove(WEATHER_FORECAST_PATH)
         return None
 
-    cached["home_team"] = cached["home_team"].map(_to_abbrev)
-    if not set(cached["home_team"].dropna()) & upcoming_home_teams:
+    if not set(cached["venue_key"].dropna()) & wanted_venues:
         logger.info("Weather cache does not cover this slate; re-fetching.")
         os.remove(WEATHER_FORECAST_PATH)
         return None

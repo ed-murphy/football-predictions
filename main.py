@@ -21,7 +21,6 @@ from src.predictions import (
 from src.totals import get_totals
 from src.train import load_model, train_model
 from src.upcoming import prepare_upcoming_games
-from src.weather_forecast import get_forecasted_weather
 from config import (
     BACKTEST_PATH, BACKTEST_START_SEASON, EVAL_MODEL_PATH, EVAL_TEST_SEASONS,
     EVAL_TRAIN_SEASONS, PROD_MODEL_PATH, PROD_SEASONS, TRAIN_START_SEASON,
@@ -65,8 +64,7 @@ def run_predictions(bundle, use_cached_totals: bool = False):
     model = load_model(PROD_MODEL_PATH)
 
     totals = get_totals(use_cache_only=use_cached_totals, team_games=bundle.team_games)
-    forecast = get_forecasted_weather(totals)
-    upcoming = prepare_upcoming_games(totals, bundle, forecast)
+    upcoming = prepare_upcoming_games(totals, bundle)
 
     if upcoming.empty:
         logger.info("No upcoming games to score.")

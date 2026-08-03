@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 # Columns that describe the game rather than one team, carried onto the game row.
 _GAME_COLUMNS = [
     "game_id", "season", "week", "date", "total_line", "spread_line", "total_points",
-    "divisional", "regular_season", "international", "is_dome", "game_temp",
-    "game_wind", "both_short_rest", "ref_avg_total", "season_game_num",
+    "divisional", "regular_season", "international", "neutral_site", "is_dome",
+    "game_temp", "game_wind", "both_short_rest", "ref_avg_total", "season_game_num",
     "home_starting_qb", "away_starting_qb",
 ]
 

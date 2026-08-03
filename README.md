@@ -143,6 +143,11 @@ Other entry points:
 | `python main.py --use-cached-totals` | skip the odds API, use cached lines |
 | `python main.py --skip-backtest` | train without the slow backtest |
 
+Refreshing the schedule matters more than it looks: it is where the venue of every
+neutral-site game comes from. If a fixture is missing from `games.parquet` the run
+still works, but falls back to guessing the venue from the home team — which is
+wrong for the eight or so games a season played abroad.
+
 ### Overriding inputs by hand
 
 `data/nfl_over_unders.csv` is regenerated each run but **existing non-null values are
@@ -198,6 +203,7 @@ app.py                  Streamlit front end
 
 src/
   constants.py          team codes, divisions, stadium coordinates
+  venues.py             international venues: coordinates and real roof state
   rolling.py            lagged rolling means and home/away broadcasting
   load.py               reads the cached nflverse parquet files
   basic.py              schedule -> team-game rows, scoring form

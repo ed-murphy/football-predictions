@@ -12,13 +12,17 @@ import glob
 import logging
 import os
 from datetime import datetime, timedelta
+from typing import Callable
 
 import numpy as np
 import pandas as pd
 
-from src.constants import DIVISION_MAP, TEAM_ABBREV
+from src.basic import add_venue_features
+from src.constants import DIVISION_MAP, STADIUM_COORDS, TEAM_ABBREV
 from src.model_features import build_model_matrix, impute_weather
 from src.pipeline import FeatureBundle
+from src.venues import lookup_venue
+from src.weather_forecast import get_forecasted_weather
 from src.referee import get_upcoming_referee_feature
 from src.rest import BYE_MAX_DAYS, BYE_MIN_DAYS, SHORT_REST_MAX_DAYS
 from config import LINE_SNAPSHOTS_DIR
@@ -38,25 +42,39 @@ _FORM_COLUMNS = [
 def prepare_upcoming_games(
     totals: pd.DataFrame,
     bundle: FeatureBundle,
-    weather_forecast: pd.DataFrame,
+    weather_fetcher: Callable[[pd.DataFrame], pd.DataFrame] = get_forecasted_weather,
 ) -> pd.DataFrame:
-    """Build a scored-ready model matrix, one row per upcoming game."""
+    """Build a scored-ready model matrix, one row per upcoming game.
+
+    The weather fetch is a parameter, and happens *after* the venue is resolved:
+    fetching it up front against the home team's city would have looked up Los
+    Angeles conditions for a game played in Melbourne.
+    """
     if totals is None or totals.empty:
         logger.info("No upcoming games in the odds feed.")
         return pd.DataFrame()
 
     games = _base_frame(totals)
+    games = _add_scheduled_venue(games, bundle)
     games = _add_schedule_context(games, bundle)
     games = _add_team_form(games, bundle)
     games = _add_qb_form(games, totals, bundle)
     games = _add_injuries(games, bundle)
     games = _add_referee(games, bundle)
-    games = _add_weather(games, weather_forecast, bundle)
+    games = _add_weather(games, weather_fetcher(_venue_requests(games)), bundle)
     games = _add_line_movement(games)
 
     matrix = build_model_matrix(games)
     logger.info("Prepared %d upcoming games for scoring.", len(matrix))
     return matrix
+
+
+def _venue_requests(games: pd.DataFrame) -> pd.DataFrame:
+    """One weather lookup per (venue, kickoff), for outdoor games only."""
+    outdoor = games[games["is_dome"] == 0]
+    return outdoor[["venue_key", "venue_lat", "venue_lon", "kickoff_utc"]].rename(
+        columns={"kickoff_utc": "kickoff_time"}
+    ).dropna(subset=["venue_lat", "venue_lon"]).drop_duplicates()
 
 
 def _base_frame(totals: pd.DataFrame) -> pd.DataFrame:
@@ -76,7 +94,6 @@ def _base_frame(totals: pd.DataFrame) -> pd.DataFrame:
 
     df["total_line"] = pd.to_numeric(df["total_line"], errors="coerce")
     df["spread_line"] = _numeric_column(df, "spread_line", default=0.0)
-    df["international"] = _numeric_column(df, "international", default=0.0).astype(int)
 
     df["divisional"] = (
         df["home_team"].map(DIVISION_MAP) == df["away_team"].map(DIVISION_MAP)
@@ -84,6 +101,93 @@ def _base_frame(totals: pd.DataFrame) -> pd.DataFrame:
     df["regular_season"] = 1
 
     return df.reset_index(drop=True)
+
+
+def _add_scheduled_venue(games: pd.DataFrame, bundle: FeatureBundle) -> pd.DataFrame:
+    """Take venue, week and divisional status from the published NFL schedule.
+
+    The odds feed says who is playing and what the line is; it says nothing about
+    *where*. Roughly eight games a season are at a neutral site, and for those the
+    home team's stadium is the wrong venue — the 2026 SF at LA opener is played at
+    the Melbourne Cricket Ground, not SoFi.
+
+    The schedule in `games.parquet` carries this, so it is joined here and only
+    guessed at when a fixture is missing from it.
+    """
+    schedule = bundle.games
+    wanted = ["home_team", "away_team", "gameday", "stadium", "location", "roof",
+              "week", "div_game", "spread_line", "game_type"]
+    available = [c for c in wanted if c in schedule.columns]
+
+    sched = schedule[available].copy()
+    sched["match_day"] = pd.to_datetime(sched["gameday"]).dt.date
+    sched = sched.drop_duplicates(["home_team", "away_team", "match_day"])
+
+    games = games.copy()
+    games["match_day"] = games["date"].dt.date
+
+    merged = games.merge(
+        sched.drop(columns=["gameday"]),
+        on=["home_team", "away_team", "match_day"], how="left",
+        suffixes=("", "_sched"),
+    )
+
+    matched = merged["stadium"].notna() if "stadium" in merged.columns else pd.Series(False, index=merged.index)
+    logger.info("Matched %d/%d upcoming games to the published schedule.",
+                int(matched.sum()), len(games))
+    if not matched.all():
+        unmatched = merged.loc[~matched, ["away_team", "home_team"]]
+        logger.warning(
+            "No schedule row for %d fixture(s) — venue and week fall back to "
+            "heuristics for: %s. Re-run the download script to refresh the schedule.",
+            int((~matched).sum()),
+            ", ".join(f"{r.away_team}@{r.home_team}" for r in unmatched.itertuples()),
+        )
+
+    games["stadium"] = merged.get("stadium")
+    games["location"] = merged.get("location")
+    games["roof"] = merged.get("roof")
+    games["scheduled_week"] = pd.to_numeric(merged.get("week"), errors="coerce")
+
+    if "div_game" in merged.columns:
+        games["divisional"] = (
+            pd.to_numeric(merged["div_game"], errors="coerce")
+            .fillna(games["divisional"]).astype(int)
+        )
+    if "spread_line_sched" in merged.columns:
+        # Prefer the live spread from the odds feed; the schedule's is a fallback.
+        games["spread_line"] = games["spread_line"].where(
+            games["spread_line"] != 0,
+            pd.to_numeric(merged["spread_line_sched"], errors="coerce").fillna(0.0),
+        )
+    if "game_type" in merged.columns:
+        games["regular_season"] = (
+            merged["game_type"].fillna("REG").eq("REG").astype(int)
+        )
+
+    games = add_venue_features(games)
+
+    # Where the weather actually needs looking up. For a home game that is the
+    # host's own stadium; for an international one it is the foreign ground.
+    venues = games["stadium"].map(lookup_venue)
+    games["venue_key"] = np.where(
+        venues.notna(), venues.map(lambda v: v.name if v else None), games["home_team"]
+    )
+    games["venue_lat"] = [
+        v.lat if v else STADIUM_COORDS.get(t, (np.nan, np.nan))[0]
+        for v, t in zip(venues, games["home_team"])
+    ]
+    games["venue_lon"] = [
+        v.lon if v else STADIUM_COORDS.get(t, (np.nan, np.nan))[1]
+        for v, t in zip(venues, games["home_team"])
+    ]
+
+    for row in games[games["international"] == 1].itertuples():
+        logger.info("International fixture: %s at %s (%s).",
+                    f"{row.away_team}@{row.home_team}", row.stadium,
+                    "indoor" if row.is_dome else "outdoor")
+
+    return games.drop(columns="match_day")
 
 
 def _numeric_column(df: pd.DataFrame, name: str, default: float) -> pd.Series:
@@ -113,12 +217,17 @@ def _add_schedule_context(games: pd.DataFrame, bundle: FeatureBundle) -> pd.Data
         (games["home_short_rest"] == 1) & (games["away_short_rest"] == 1)
     ).astype(int)
 
-    # Week number: continue on from the home team's last played week where the gap
-    # looks like a normal turnaround, otherwise start a new season at week 1.
+    # Week number comes from the schedule where we matched one. Otherwise continue
+    # on from the home team's last played week when the gap looks like a normal
+    # turnaround, and start a new season at week 1 when it doesn't.
     last_week = games["home_team"].map(last_game["last_week"])
     gap_days = (games["date"] - pd.to_datetime(games["home_team"].map(last_game["last_date"]))).dt.days
-    games["week"] = np.where(gap_days <= 30, last_week + (gap_days / 7).round(), 1)
-    games["week"] = games["week"].clip(1, 22)
+    inferred = pd.Series(
+        np.where(gap_days <= 30, last_week + (gap_days / 7).round(), 1),
+        index=games.index,
+    )
+    games["week"] = games.get("scheduled_week", pd.Series(np.nan, index=games.index))
+    games["week"] = games["week"].fillna(inferred).clip(1, 22)
     games["season"] = games["date"].dt.year - (games["date"].dt.month < 3).astype(int)
     return games
 
@@ -191,25 +300,35 @@ def _add_referee(games: pd.DataFrame, bundle: FeatureBundle) -> pd.DataFrame:
 
 def _add_weather(games: pd.DataFrame, forecast: pd.DataFrame,
                  bundle: FeatureBundle) -> pd.DataFrame:
-    """Forecast temperature/wind in the same units as the training data (F, mph)."""
+    """Forecast temperature/wind in the same units as the training data (F, mph).
+
+    `is_dome` is already set by `_add_scheduled_venue` from the actual venue; only
+    fixtures with no schedule row fall back to the home team's usual stadium.
+    """
     from src.constants import DOME_TEAMS, INDOOR_TEMP_F, INDOOR_WIND_MPH
 
-    games["is_dome"] = games["home_team"].isin(DOME_TEAMS).astype(int)
+    if "is_dome" not in games.columns:
+        games["is_dome"] = np.nan
+    games["is_dome"] = (
+        pd.to_numeric(games["is_dome"], errors="coerce")
+        .fillna(games["home_team"].isin(DOME_TEAMS).astype(int))
+        .astype(int)
+    )
     games["game_temp"] = np.nan
     games["game_wind"] = np.nan
 
     if forecast is not None and not forecast.empty:
         fc = forecast.copy()
         fc["kickoff_time"] = pd.to_datetime(fc["kickoff_time"], utc=True)
-        # Match on home team plus calendar day: forecast slots are three-hourly and
+        # Match on venue plus calendar day: forecast slots are three-hourly and
         # kickoff times shift as the schedule firms up.
         fc["match_day"] = fc["kickoff_time"].dt.date
         games["match_day"] = games["kickoff_utc"].dt.date
 
         merged = games.merge(
-            fc[["home_team", "match_day", "temperature", "wind_speed"]]
-            .drop_duplicates(["home_team", "match_day"]),
-            on=["home_team", "match_day"], how="left",
+            fc[["venue_key", "match_day", "temperature", "wind_speed"]]
+            .drop_duplicates(["venue_key", "match_day"]),
+            on=["venue_key", "match_day"], how="left",
         )
         games["game_temp"] = merged["temperature"].to_numpy()
         games["game_wind"] = merged["wind_speed"].to_numpy()

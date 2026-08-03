@@ -98,10 +98,60 @@ features that change the fourth decimal place is noise mining.
 * **Rest days were recomputed from game dates** when `games.parquet` already ships
   correct `home_rest` / `away_rest` columns.
 
+* **Neutral-site games were treated as home games.** Venue was inferred from the
+  home team, so the 2026 season opener — SF at LA, played at the Melbourne Cricket
+  Ground — was marked domestic, given SoFi Stadium's roof, and had *Los Angeles*
+  weather forecast for it. Around eight games a season are affected. Venue now
+  comes from the schedule; see below.
+
 * **The odds cache accumulated duplicates.** Deduplication keyed on the exact
   `commence_time`, which drifts by minutes as the schedule firms up, leaving the same
   fixture in the cache several times and producing duplicate predictions. It now
   keys on the kickoff *date*, and prunes fixtures that kicked off over a week ago.
+
+## Identifying where a game is played
+
+Roughly eight games a season are at a neutral site, and for those the home team's
+stadium is the wrong venue for weather, travel and kickoff body clock. nflverse
+carries this information but populates it differently in different eras, and no
+single column is reliable across all of them:
+
+| Season | `location` | `stadium` | `stadium_id` | `roof` |
+|---|---|---|---|---|
+| 2014–2024 | correct | correct | correct | correct |
+| 2025 | correct | **home team's stadium** | **home team's code** | home team's roof |
+| 2026 | correct | correct | **home team's code** | **wrong for some venues** |
+
+The 2026 Melbourne fixture is filed under `stadium_id = LAX01` (SoFi Stadium) with
+`roof = dome`, though the MCG is open-air. The 2025 London games are filed at
+FirstEnergy Stadium and MetLife.
+
+`src/venues.py` therefore holds an explicit table of international venues — real
+coordinates and real roof state — and `basic.add_venue_features` combines two
+independent signals:
+
+1. **Venue name lookup.** Catches every era where `stadium` is right, and supplies
+   coordinates so the weather forecast is fetched for the correct city. It also
+   catches games listed as `Home` rather than `Neutral`, which is how Jacksonville's
+   London fixtures appear.
+2. **Kickoff hour.** No domestic NFL game kicks off before 11:00 Eastern, so a
+   neutral-site game at 09:30 ET is in Europe regardless of what `stadium` says.
+   This is what recovers the 2025 games.
+
+Where only the second signal fires, the game is known to be international but the
+venue is not identified. It is then treated as open-air — nearly all overseas
+venues are, and inheriting the *home* stadium's roof would be actively wrong — and
+its weather falls back to seasonal normals.
+
+Two limitations worth knowing:
+
+* A neutral-site game abroad with a US-evening kickoff and no venue name in the
+  feed is not detected. The 2025 São Paulo opener (Friday 20:00 ET) is the one
+  case in the data.
+* Seasonal-normal weather is computed from US games, so an international fixture
+  beyond the five-day forecast horizon gets a US-typical temperature for that week
+  of the season. Wind, which carries far more weight in the model, is less
+  distorted by this than temperature.
 
 ## Calibration
 
