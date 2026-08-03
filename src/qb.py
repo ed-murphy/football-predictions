@@ -1,94 +1,99 @@
+"""Quarterback form features.
+
+Rolling QB EPA is keyed on the *player*, not the team, so that a mid-season change
+of starter immediately changes the feature rather than carrying the previous
+starter's form forward.
+"""
+from __future__ import annotations
+
 import logging
+
+import pandas as pd
+
+from src.rolling import broadcast_home_away, lagged_rolling_mean
+from config import ROLLING_WINDOW_QB
 
 logger = logging.getLogger(__name__)
 
 
-def create_qb_features(team_games, plays):
+def _qb_game_epa(plays: pd.DataFrame) -> pd.DataFrame:
+    """Mean EPA per (game, team, quarterback) across dropbacks and QB runs."""
+    qb_names = set(plays["passer_player_name"].dropna())
+
+    qb_plays = plays[
+        plays["passer_player_name"].notna()
+        | (plays["qb_dropback"] == 1)
+        | (plays["rusher_player_name"].isin(qb_names))
+    ].copy()
+    qb_plays["qb_name"] = qb_plays["passer_player_name"].fillna(qb_plays["rusher_player_name"])
+    qb_plays = qb_plays[qb_plays["qb_name"].notna() & qb_plays["posteam"].notna()]
+
+    return (
+        qb_plays.groupby(["game_id", "posteam", "qb_name"], observed=True)["epa"]
+        .mean().reset_index(name="qb_epa")
+        .rename(columns={"posteam": "team"})
+    )
+
+
+def create_qb_features(
+    team_games: pd.DataFrame, plays: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Add starting-QB rolling EPA to `team_games`.
+
+    Returns the enriched frame plus a `qb_name -> rolling_avg_qb_epa` lookup holding
+    each quarterback's most recent value, for scoring upcoming games.
     """
-    Use play-level data to add QB EPA to game-level data
-    """
+    qb_epa = _qb_game_epa(plays)
 
-    pass_plays = (
-        plays[plays['passer_player_name'].notnull()]
-        .sort_values(['game_id', 'posteam', 'play_id'])
+    # A team's starter is whoever threw the game's first pass for them.
+    starters = (
+        plays[plays["passer_player_name"].notna()]
+        .sort_values(["game_id", "posteam", "play_id"])
+        .groupby(["game_id", "posteam"], observed=True)["passer_player_name"]
+        .first().reset_index()
+        .rename(columns={"posteam": "team", "passer_player_name": "starting_qb"})
     )
 
-    starting_qbs = (
-        pass_plays.groupby(['game_id', 'posteam'])['passer_player_name']
-        .first()
-        .reset_index()
-        .rename(columns={'posteam': 'team', 'passer_player_name': 'starting_qb'})
-    )
-
-    all_qbs = (
-        pass_plays.groupby(['game_id', 'posteam'])['passer_player_name']
-        .unique()
-        .reset_index()
-        .explode('passer_player_name')
-        .rename(columns={'posteam': 'team', 'passer_player_name': 'qb_name'})
-    )
-
+    # Order by kickoff, not game_id: game_id strings don't sort chronologically
+    # across seasons once postseason games are included.
+    game_dates = team_games[["game_id", "date"]].drop_duplicates("game_id")
     qb_epa = (
-        plays.loc[
-            (plays['passer_player_name'].notna()) |  # passes
-            (plays['qb_dropback'] == 1) |           # dropbacks (scrambles/sacks)
-            ((plays['rusher_player_name'].notna()) & 
-            (plays['rusher_player_name'].isin(all_qbs['qb_name'])))  # non-dropback QB runs
-        ]
-        .assign(qb=lambda df: df['passer_player_name'].fillna(df['rusher_player_name']))
-        .groupby(['game_id', 'posteam', 'qb'])['epa']
-        .mean()
-        .reset_index()
-        .rename(columns={'posteam': 'team', 'qb': 'qb_name', 'epa': 'qb_avg_epa'})
-    )
-
-    qb_epa = qb_epa.sort_values(['qb_name', 'game_id']).reset_index(drop=True)
-
-    qb_epa['rolling_avg_qb_epa'] = (
-        qb_epa.groupby('qb_name')['qb_avg_epa']
-        .apply(lambda x: x.shift().rolling(window=3, min_periods=1).mean())
-        .reset_index(level=0, drop=True)
-    )
-
-    latest_qb_epa = (
-        qb_epa.sort_values(['qb_name', 'game_id'])
-        .groupby('qb_name')
-        .tail(1)[['qb_name', 'rolling_avg_qb_epa']]
+        qb_epa.merge(game_dates, on="game_id", how="left")
+        .sort_values(["qb_name", "date"])
         .reset_index(drop=True)
     )
 
-    team_games = team_games.merge(starting_qbs, on=['game_id', 'team'], how='left')
+    qb_epa["rolling_avg_qb_epa"] = lagged_rolling_mean(
+        qb_epa, "qb_name", "qb_epa", ROLLING_WINDOW_QB
+    )
 
+    # For an upcoming game a quarterback's most recent outing *is* prior
+    # information, so the served value includes it — unlike the training column,
+    # which must exclude the game being predicted.
+    latest_qb_epa = (
+        qb_epa.sort_values("date")
+        .groupby("qb_name")
+        .tail(ROLLING_WINDOW_QB)
+        .groupby("qb_name", as_index=False)["qb_epa"]
+        .mean()
+        .rename(columns={"qb_epa": "rolling_avg_qb_epa"})
+    )
+
+    team_games = team_games.merge(starters, on=["game_id", "team"], how="left")
     team_games = team_games.merge(
-        qb_epa[['game_id', 'team', 'qb_name', 'qb_avg_epa', 'rolling_avg_qb_epa']],
-        left_on=['game_id', 'team', 'starting_qb'],
-        right_on=['game_id', 'team', 'qb_name'],
-        how='left'
-    ).drop(columns=['qb_name'])
+        qb_epa[["game_id", "team", "qb_name", "rolling_avg_qb_epa"]],
+        left_on=["game_id", "team", "starting_qb"],
+        right_on=["game_id", "team", "qb_name"],
+        how="left",
+        validate="one_to_one",
+    ).drop(columns=["qb_name"])
 
-    home_qb_features = (
-        team_games.loc[team_games['is_home'] == 1, 
-                    ['game_id', 'qb_avg_epa', 'rolling_avg_qb_epa', 'starting_qb']]
-        .rename(columns={
-            'qb_avg_epa': 'home_qb_avg_epa',
-            'rolling_avg_qb_epa': 'home_rolling_avg_qb_epa',
-            'starting_qb': 'home_starting_qb'
-        })
-    )
+    team_games = broadcast_home_away(team_games, "rolling_avg_qb_epa")
+    for side, flag in [("home", 1), ("away", 0)]:
+        team_games[f"{side}_starting_qb"] = (
+            team_games["starting_qb"].where(team_games["is_home"] == flag)
+            .groupby(team_games["game_id"]).transform("first")
+        )
 
-    away_qb_features = (
-        team_games.loc[team_games['is_home'] == 0, 
-                    ['game_id', 'qb_avg_epa', 'rolling_avg_qb_epa', 'starting_qb']]
-        .rename(columns={
-            'qb_avg_epa': 'away_qb_avg_epa',
-            'rolling_avg_qb_epa': 'away_rolling_avg_qb_epa',
-            'starting_qb': 'away_starting_qb'
-        })
-    )
-
-    team_games = team_games.merge(home_qb_features, on='game_id', how='left')
-    team_games = team_games.merge(away_qb_features, on='game_id', how='left')
-
-    logger.info("QB EPA features created.")
-
+    logger.info("QB EPA features created (%d quarterbacks).", qb_epa["qb_name"].nunique())
     return team_games, latest_qb_epa

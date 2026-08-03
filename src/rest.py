@@ -1,60 +1,40 @@
+"""Rest and schedule-spot features.
+
+`games.parquet` already ships `home_rest` / `away_rest` (days since each team's
+previous game, correct across bye weeks and season boundaries), so these are read
+straight off the schedule rather than recomputed from game dates.
+"""
+from __future__ import annotations
+
 import logging
+
 import pandas as pd
+
+from src.rolling import broadcast_home_away
 
 logger = logging.getLogger(__name__)
 
+SHORT_REST_MAX_DAYS = 6      # Thursday games and the like
+BYE_MIN_DAYS = 11            # a full extra week off
+BYE_MAX_DAYS = 21
+
 
 def create_rest_features(team_games: pd.DataFrame) -> pd.DataFrame:
+    """Add short-rest and post-bye flags for both teams.
+
+    Adds `home/away_short_rest`, `home/away_post_bye`, `home/away_rest_days`
+    and `both_short_rest`.
     """
-    Adds rest-based flags for home and away teams:
-      - short_rest  : <= 6 days since last game (e.g. Thursday games)
-      - post_bye    : 11–21 days since last game within the same season
-      - both_short_rest : both teams on short rest
+    team_games = team_games.copy()
+    rest = team_games["rest_days"]
 
-    Parameters
-    ----------
-    team_games : pd.DataFrame
-        Team-level game data (must include game_id, team, date, season).
+    team_games["short_rest"] = (rest <= SHORT_REST_MAX_DAYS).astype(int)
+    team_games["post_bye"] = rest.between(BYE_MIN_DAYS, BYE_MAX_DAYS).astype(int)
 
-    Returns
-    -------
-    pd.DataFrame
-        Updated with home_short_rest, away_short_rest, both_short_rest,
-        home_post_bye, away_post_bye.
-    """
-    tg = team_games.copy()
-    tg['game_date'] = pd.to_datetime(tg['date'])
-    tg = tg.sort_values(['team', 'game_date'])
-
-    # Days since last game across all seasons (cross-season gaps will be large)
-    tg['days_since_last_game'] = tg.groupby('team')['game_date'].diff().dt.days
-
-    tg['short_rest'] = (tg['days_since_last_game'] <= 6).astype(int)
-
-    # Bye week: exactly one extra week off within a season (11–21 day gap).
-    # Cross-season gaps are much larger so they don't false-positive here.
-    tg['post_bye'] = (
-        (tg['days_since_last_game'] >= 11) & (tg['days_since_last_game'] <= 21)
+    team_games = broadcast_home_away(team_games, ["short_rest", "post_bye", "rest_days"])
+    team_games["both_short_rest"] = (
+        (team_games["home_short_rest"] == 1) & (team_games["away_short_rest"] == 1)
     ).astype(int)
 
-    # Home team
-    home_rest = (
-        tg.loc[tg['is_home'] == 1, ['game_id', 'short_rest', 'post_bye']]
-        .rename(columns={'short_rest': 'home_short_rest', 'post_bye': 'home_post_bye'})
-    )
-
-    # Away team
-    away_rest = (
-        tg.loc[tg['is_home'] == 0, ['game_id', 'short_rest', 'post_bye']]
-        .rename(columns={'short_rest': 'away_short_rest', 'post_bye': 'away_post_bye'})
-    )
-
-    team_games = team_games.merge(home_rest, on='game_id', how='left')
-    team_games = team_games.merge(away_rest, on='game_id', how='left')
-
-    team_games['both_short_rest'] = (
-        (team_games['home_short_rest'] == 1) & (team_games['away_short_rest'] == 1)
-    ).astype(int)
-
-    logger.info("Rest features created: home/away short_rest, post_bye, both_short_rest")
+    logger.info("Rest features created: short rest, post-bye, rest days.")
     return team_games

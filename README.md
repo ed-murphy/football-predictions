@@ -1,314 +1,239 @@
-# NFL Over/Under Predictor
+# NFL Totals Model
 
-An XGBoost binary classifier that estimates the probability that an NFL game goes **over** the Vegas total. It does not predict raw point totals — it predicts P(over) directly, which is calibrated via log-loss and translates naturally into a bet signal.
+A model that estimates the combined score of upcoming NFL games and compares it to
+the market's posted total.
+
+**Headline result: it does not beat the market.** Across a 2018–2025 walk-forward
+backtest the model's average error is 10.41 points against the closing line's 10.42,
+and the flagged bets return −3.6% ± 9.7% at −110 pricing. That is a real finding
+about how efficient NFL totals markets are, and the repository is built to report it
+honestly rather than to manufacture a signal.
 
 ---
 
-## Table of Contents
+## Contents
 
-1. [How the Model Works](#how-the-model-works)
+1. [What it does](#what-it-does)
 2. [Performance](#performance)
-3. [Prerequisites](#prerequisites)
-4. [Clone & Install](#clone--install)
-5. [API Keys](#api-keys)
-6. [Weekly Workflow](#weekly-workflow)
-   - [Step 1 — Refresh Historical Data](#step-1--refresh-historical-data)
-   - [Step 2 — Retrain (optional)](#step-2--retrain-optional)
-   - [Step 3 — Generate Predictions](#step-3--generate-predictions)
-   - [Step 4 — Override If Needed](#step-4--override-if-needed)
-7. [Reading the Output](#reading-the-output)
-8. [Key Config Values](#key-config-values)
-9. [Feature Reference](#feature-reference)
-10. [File Overview](#file-overview)
+3. [Install](#install)
+4. [Weekly workflow](#weekly-workflow)
+5. [Reading the output](#reading-the-output)
+6. [Configuration](#configuration)
+7. [Project layout](#project-layout)
+8. [Tests](#tests)
 
 ---
 
-## How the Model Works
+## What it does
 
-**Target:** `1` if `total_points > total_line` (over hit), `0` otherwise.
+For each game it predicts **the residual**: how many points the final combined score
+will land above or below the posted total.
 
-**Algorithm:** `XGBClassifier` with `objective='binary:logistic'`, trained with log-loss. `predict_proba()[:, 1]` gives P(over). This is meaningfully different from predicting total points with MSE — log-loss trains the model to be well-calibrated on direction rather than penalising magnitude errors.
+```
+predicted_total = market_total + shrunk_model_edge
+P(over)         = P(residual > 0)  under the model's error distribution
+```
 
-**Training data:** 2014–2025 regular season and playoff games. Walk-forward CV confirmed that including pre-2018 data improves performance (more data beats recency effects because the model predicts *relative to the line*, and the line already accounts for era-level scoring trends).
+Modelling the residual rather than the total directly means the model never has to
+relearn what the market already knows (that domes are high scoring, that these two
+offences are good); it only has to find where the line is wrong. It is a ridge
+regression over ~80 features covering team scoring form, pace, per-play efficiency,
+quarterback EPA, defensive EPA, red-zone and third-down conversion, turnovers, rest,
+injuries, kickoff weather, referee tendency, and the market's own total and spread.
 
-**Two models are saved:**
-- **Eval model** — trained on 2014–2023, evaluated on 2024 holdout
-- **Prod model** — trained on 2014–2025, used for live predictions
+Every predicted edge is multiplied by a **shrinkage coefficient** estimated by
+walk-forward validation inside the training window: the model measures how much of
+its own edge historically survived out of sample and scales its forecasts down to
+match. When there is no measurable signal the coefficient goes to zero and the model
+declines to disagree with the line at all.
 
-**Bet signals** are generated at `PROB_THRESHOLD = 0.55`:
-- `p_over > 0.55` → **Over**
-- `p_over < 0.45` → **Under**
-- Otherwise → no signal (blank)
+### Why ridge and not gradient boosting
+
+The previous version of this project was an XGBoost classifier on the binary
+over/under outcome. It scored **worse than a coin flip** out of sample — holdout log
+loss 0.80 against 0.69 for always predicting 50%. Five hundred trees at depth five,
+fitted to ~2,700 near-coinflip labels, memorised noise.
+
+Every tree ensemble tried during the rewrite behaved the same way. With this much
+data and this little signal, heavy linear shrinkage is the only thing that
+generalises. See [`docs/model.md`](docs/model.md) for the comparison table.
 
 ---
 
 ## Performance
 
-Walk-forward CV (one season at a time, 2018–2025, training from 2014):
+Walk-forward backtest, 2018–2025, each season scored by a model that saw only
+earlier seasons (hyperparameters and shrinkage re-selected per fold):
 
-| Metric | Model | Random baseline |
-|--------|-------|----------------|
-| AUC | **0.519** | 0.500 |
-| Precision at signal | **0.516** | 0.500 |
-| Avg log-loss | 0.797 | ~0.693 |
-| Avg Brier score | 0.289 | 0.250 |
+| Metric | Model | Benchmark |
+|---|---|---|
+| Log loss | 0.6924 | 0.6931 (coin flip) |
+| AUC | 0.522 | 0.500 |
+| Mean absolute error of predicted total | 10.41 | 10.42 (repeat the line) |
+| Edge correlation | +0.022 ± 0.021 | 0 |
+| Flagged bets | 97 | — |
+| Win rate | 50.5% | 52.4% needed at −110 |
+| ROI | −3.6% ± 9.7% | 0% |
 
-The edge is real but slim (~1.6% precision above random). Public box-score features are already largely priced into the Vegas line — this model captures residual signal from injury timing, referee tendencies, and line movement direction.
+**Edge correlation** — the correlation between the edge the model predicted and the
+residual that actually happened, over every game rather than only the ones bet — is
+the most stable read on whether the model knows anything. At +0.022 with a standard
+error of 0.021 it is not distinguishable from zero over this window. Fixing the
+alpha and shrinkage rather than re-selecting them per fold pushes it to about +0.05
+(z ≈ 2.5), which is a whisper of signal worth roughly 0.4% of residual variance.
+
+None of these numbers support betting. They are reported with standard errors
+precisely so that a run of good luck cannot be mistaken for an edge.
 
 ---
 
-## Prerequisites
-
-- Python 3.10+
-- Git
-
----
-
-## Clone & Install
+## Install
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/ed-murphy/football-predictions
 cd football-predictions
-
 python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-
-# macOS / Linux
-source .venv/bin/activate
-
+.venv/Scripts/activate          # Windows;  source .venv/bin/activate elsewhere
 pip install -r requirements.txt
 ```
 
+Downloading source data needs `nfl_data_py`, which pins older pandas/numpy. Install
+it in a separate environment:
+
+```bash
+python -m venv download/download_env
+download/download_env/Scripts/pip install -r download/download-requirements.txt
+download/download_env/Scripts/python download/download_nfl_data.py
+```
+
+### API keys
+
+Create a `.env` in the repository root:
+
+```
+API_KEY_TOTALS=<the-odds-api.com key>
+API_KEY_WEATHER=<openweathermap.org key>
+```
+
+Both are optional for training and backtesting; they are needed to score an upcoming
+slate. Without them the run falls back to cached lines and seasonal-normal weather.
+
 ---
 
-## API Keys
-
-Two external APIs are required. Create a `.env` file in the repo root:
-
-```
-API_KEY_TOTALS=your_odds_api_key
-API_KEY_WEATHER=your_openweathermap_key
-```
-
-| Key | Service | Used for |
-|-----|---------|----------|
-| `API_KEY_TOTALS` | [The Odds API](https://the-odds-api.com) | Fetching DraftKings over/under lines for upcoming games |
-| `API_KEY_WEATHER` | [OpenWeatherMap](https://openweathermap.org/api) | Fetching weather forecasts for game locations |
-
-Both services have free tiers sufficient for weekly use.
-
----
-
-## Weekly Workflow
-
-### Step 1 — Refresh Historical Data
-
-Historical game, play-by-play, and injury data is downloaded via `nfl_data_py` using a **separate** script with its own virtual environment (it requires `pandas<2.0`, which conflicts with the main environment).
-
-**First time only — create the environment:**
-```bash
-cd download
-python -m venv download_env
-download_env\Scripts\activate        # Windows
-# source download_env/bin/activate   # macOS / Linux
-pip install -r download-requirements.txt
-python download_nfl_data.py
-cd ..
-```
-
-**Every week — refresh data:**
-```bash
-cd download
-download_env\Scripts\activate        # Windows
-# source download_env/bin/activate   # macOS / Linux
-python download_nfl_data.py
-cd ..
-```
-
-> Re-activate the **main** environment afterward:
-> ```bash
-> .venv\Scripts\activate       # Windows
-> # source .venv/bin/activate  # macOS / Linux
-> ```
-
-This saves to `data/`:
-- `games.parquet` — game-level schedule and result data (2014–present)
-- `plays.parquet` — play-by-play data (2014–present)
-- `injuries.parquet` — weekly injury reports (2014–present)
-
-Injury data is the most time-sensitive — it changes through the week as players are added/removed from reports. Re-run the download script on game day for the freshest data.
-
-### Step 2 — Retrain (optional)
-
-Retrain at the start of each new season (or whenever you want to incorporate completed games from the current season):
+## Weekly workflow
 
 ```bash
-python main.py --train_only
-```
+# 1. Refresh nflverse data (schedules, play-by-play, injuries)
+download/download_env/Scripts/python download/download_nfl_data.py
 
-This:
-1. Builds all features from the downloaded parquet files
-2. Trains the **eval model** (2014–2023 train / 2024 test) and prints holdout metrics
-3. Runs **walk-forward CV** (2018–present) and logs per-season results
-4. Trains the **prod model** (2014–present) and saves it to `model/`
-
-Retraining is not required weekly — the prod model already includes the full training window.
-
-### Step 3 — Generate Predictions
-
-```bash
+# 2. Retrain, backtest, and score this week's slate
 python main.py
+
+# 3. View the output
+streamlit run app.py
 ```
 
-This fetches current DraftKings lines from The Odds API, auto-populates all context fields, runs the prod model, and writes output to `predictions/predictions_YYYYMMDD.csv`.
+Other entry points:
 
-To skip the API call and use the lines already saved in `data/nfl_over_unders.csv`:
+| Command | Effect |
+|---|---|
+| `python main.py --train-only` | fit and evaluate, write no predictions |
+| `python main.py --predict-only` | score the slate with the saved model |
+| `python main.py --backtest` | walk-forward evaluation only |
+| `python main.py --use-cached-totals` | skip the odds API, use cached lines |
+| `python main.py --skip-backtest` | train without the slow backtest |
 
-```bash
-python main.py --use_cached_totals
-```
+### Overriding inputs by hand
 
-### Step 4 — Override If Needed
-
-If a QB is injured or any auto-inferred value is wrong, edit `data/nfl_over_unders.csv` directly, then run with `--use_cached_totals` to use your corrected version.
-
-QB names must match the play-by-play format: `F.Lastname` (e.g. `J.Allen`, `L.Jackson`). Check recent `predictions/` CSVs for examples.
-
-**Auto-populated fields:**
-
-| Field | How it's computed |
-|-------|------------------|
-| `home_starting_qb` / `away_starting_qb` | Most recent starter for each team from play-by-play history |
-| `home_short_rest` / `away_short_rest` | `1` if the team's last game was ≤ 6 days before kickoff |
-| `international` | `1` if kickoff is before 11:00 AM US/Eastern (London/Munich games) |
+`data/nfl_over_unders.csv` is regenerated each run but **existing non-null values are
+preserved**, so you can correct a starting quarterback or an international flag and
+the correction will survive the next refresh.
 
 ---
 
-## Reading the Output
+## Reading the output
 
-Output CSV columns:
+Predictions are written to `predictions/predictions_YYYYMMDD[_vN].csv`:
 
-| Column | Description |
-|--------|-------------|
-| `date` | Game date |
-| `home_team` / `away_team` | NFL team abbreviations |
-| `total_line` | Current DraftKings over/under line |
-| `p_over` | Model's estimated P(over), 0–1 |
-| `bet` | `Over`, `Under`, or blank (no signal) |
-| `line_open` | First line snapshot captured this week |
-| `line_movement` | `total_line − line_open` (positive = line bet up; negative = bet down) |
-| `home_qb_injured` / `away_qb_injured` | `1` if the starting QB is on the injury report |
-| `actual_total` | Filled in after the game completes |
+| Column | Meaning |
+|---|---|
+| `total_line` | the market's posted total |
+| `pred_total` | the model's expected combined score |
+| `edge` | `pred_total - total_line`, in points |
+| `p_over` | probability the game finishes over the line |
+| `bet` | `Over`, `Under`, or blank |
+| `stake` | quarter-Kelly position size in units |
+| `line_open` / `line_movement` | earliest snapshot this week, and the move since |
+| `actual_total` / `result` | filled in once the game is played |
 
-**Line movement context:** Every call to `python main.py` saves a timestamped snapshot to `data/line_snapshots/`. `line_open` is the earliest snapshot for the week; `line_movement` shows how many points the market has moved since. Sharp action tends to move lines by 0.5–1.5 points.
-
----
-
-## Key Config Values
-
-All constants live in `config.py`:
-
-| Constant | Value | Meaning |
-|----------|-------|---------|
-| `PROB_THRESHOLD` | `0.55` | Minimum P(over) to flag a bet |
-| `TRAIN_START_SEASON` | `2014` | Earliest season used in any training fold |
-| `EVAL_TRAIN_SEASONS` | `2014–2023` | Seasons for the holdout eval model |
-| `EVAL_TEST_SEASONS` | `[2024]` | Holdout test season |
-| `PROD_SEASONS` | `2014–2025` | Seasons for the prod model |
-| `ROLLING_WINDOW_QB` | `3` | Games in QB EPA rolling average |
-| `ROLLING_WINDOW_OFFENSE` | `4` | Games in offensive efficiency rolling averages |
-| `MODEL_N_ESTIMATORS` | `500` | XGBoost trees |
-| `MODEL_MAX_DEPTH` | `5` | Max tree depth |
-| `MODEL_LEARNING_RATE` | `0.05` | XGBoost eta |
-
-To change the bet threshold, update `PROB_THRESHOLD`. To extend training data when new seasons are available, update `PROD_SEASONS` and `EVAL_TRAIN_SEASONS`.
+`bet` is only populated when the edge clears the point at which it can pay for the
+vig. That threshold is **derived, not chosen**: at −110 you need to win 52.38% of
+bets, and inverting the model's own residual distribution says how many points of
+disagreement that requires (about 0.8 points at a 13-point sigma). Most weeks
+nothing qualifies, which is the correct behaviour for a model with no demonstrated
+edge.
 
 ---
 
-## Feature Reference
+## Configuration
 
-### Base features (raw rolling stats)
+Everything tunable is in [`config.py`](config.py). The choices that matter:
 
-**Scoring form** — rolling 3-game avg points for/against (home + away)
-
-**QB quality** — rolling 3-game avg QB EPA (home + away)
-
-**Defense** — rolling 3-game avg defensive EPA, sack rate (home + away)
-
-**Offensive efficiency** — rolling 4-game avg pass rate, explosive play rate, success rate, rush EPA, pass EPA, CPOE (home + away)
-
-**Pace** — rolling 5-game avg offensive plays per game (home + away)
-
-**Red zone** — rolling 3-game red zone efficiency (home + away)
-
-**Turnovers** — rolling 3-game avg turnovers (home + away)
-
-**Third down** — rolling 3-game avg third-down conversion rate (home + away)
-
-**Weather** — temperature and wind speed at game site
-
-**Injuries** — injury index (weighted starter availability) and QB injured flag (home + away)
-
-**Referee tendency** — career avg total points allowed by the assigned referee (expanding window, prior games only, to prevent leakage)
-
-**Game context** — divisional flag, regular season flag, international flag, short rest (≤6 days), post-bye (home + away)
-
-### Engineered features (interactions and deltas)
-
-Pace × wind speed interactions, QB EPA × opposing defense matchup, sum and delta versions of pace/QB EPA/pass EPA/rush EPA/success rate/explosive rate/defense EPA/red zone efficiency/turnovers/third-down/sack rate.
+| Setting | Default | Effect |
+|---|---|---|
+| `RIDGE_ALPHA_GRID` | `100…30000` | penalties searched by walk-forward MSE |
+| `MIN_EDGE_MARGIN_POINTS` | `0.25` | margin above break-even required to flag a bet |
+| `KELLY_FRACTION` | `0.25` | fraction of full Kelly used for `stake` |
+| `ROLLING_WINDOW_*` | 4–5 games | how much history each form feature averages |
+| `BACKTEST_START_SEASON` | `2018` | first season scored out of sample |
 
 ---
 
-## File Overview
+## Project layout
 
 ```
-main.py                      Entry point — training and prediction CLI
-config.py                    All constants: season ranges, thresholds, hyperparameters, paths
-requirements.txt             Main environment dependencies
-app.py                       Streamlit dashboard (predictions + performance + model insights)
-
-data/
-  games.parquet              Game-level schedule and result data (downloaded)
-  plays.parquet              Play-by-play data (downloaded)
-  injuries.parquet           Weekly injury reports (downloaded)
-  nfl_over_unders.csv        Upcoming game lines (fetched + optionally hand-edited)
-  nfl_weather_forecasts.csv  Weather forecast cache (auto-generated)
-  weather_cache/             Per-game historical weather cache
-  line_snapshots/            Dated opening-line snapshots (auto-generated)
-
-download/
-  download_nfl_data.py       Downloads/refreshes all three parquet files
-  download-requirements.txt  Separate deps (requires pandas<2.0)
-
-model/
-  xgb_total_points_model_eval.joblib   Eval model (trained 2014–2023, tested on 2024)
-  xgb_total_points_model_prod.joblib   Prod model (trained 2014–2025, used for predictions)
-
-predictions/                 Output CSVs (predictions_YYYYMMDD[_vN].csv)
-old_predictions/             Archive of predictions from previous seasons
+main.py                 CLI entry point
+config.py               every tunable in one place
+app.py                  Streamlit front end
 
 src/
-  model_features.py          BASE_FEATURES, ENGINEERED_FEATURES, add_engineered_features()
-  train.py                   XGBClassifier training, build_model_data()
-  evaluate.py                evaluate_model(), walk_forward_cv() — log-loss/AUC/brier/precision
-  predictions.py             save_predictions() — merges, adds bet column, writes CSV
-  upcoming.py                prepare_upcoming_team_games() — builds feature row for each game
-  load.py                    load_data(), load_injuries()
-  basic.py                   Rolling points for/against
-  qb.py                      QB EPA rolling averages
-  defense.py                 Defensive EPA, sack rate
-  offense.py                 Pass rate, explosive rate, success rate, rush/pass EPA, CPOE
-  pace.py                    Offensive plays per game
-  rest.py                    Short rest, post-bye flags
-  redzone.py                 Red zone efficiency
-  turnovers.py               Turnover rolling averages
-  third_down.py              Third-down conversion rate
-  injuries.py                Injury index, QB injured flag
-  referee.py                 Referee career avg total (expanding window)
-  weather.py                 Historical weather lookup
-  weather_forecast.py        OpenWeatherMap forecast fetch
-  totals.py                  The Odds API fetch + line snapshot saving
-  old_predictions.py         Load prior-week predictions for deduplication
+  constants.py          team codes, divisions, stadium coordinates
+  rolling.py            lagged rolling means and home/away broadcasting
+  load.py               reads the cached nflverse parquet files
+  basic.py              schedule -> team-game rows, scoring form
+  qb.py                 quarterback rolling EPA (keyed on the player)
+  play_features.py      every play-derived feature, from one spec table
+  rest.py               short rest and post-bye flags
+  injuries.py           weekly injury index
+  referee.py            per-official historical totals
+  pipeline.py           orchestrates the above into a FeatureBundle
+  model_features.py     the feature contract shared by training and serving
+  model.py              TotalsModel: probabilities, thresholds, shrinkage
+  train.py              fitting and persistence
+  evaluate.py           walk-forward backtest and honest metrics
+  totals.py             odds API client and line snapshots
+  weather_forecast.py   kickoff weather forecasts
+  upcoming.py           builds feature rows for unplayed games
+  predictions.py        prediction table, grading, and file management
+
+tests/                  pytest suite
+download/               separate env for nfl_data_py extraction
+docs/model.md           methodology and the model-selection evidence
 ```
+
+The single most important structural rule: **training and serving share
+`model_features.build_model_matrix`.** `upcoming.py` produces raw inputs in the same
+units as `pipeline.to_game_frame`, and both go through the same builder. Adding a
+feature means editing one file.
+
+---
+
+## Tests
+
+```bash
+python -m pytest tests -q
+```
+
+The suite concentrates on the things that fail silently: lagged rolling windows
+leaking across team and season boundaries, home/away broadcasting duplicating rows,
+probability and Kelly arithmetic, bet grading, and train/serve column drift.

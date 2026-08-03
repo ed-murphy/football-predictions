@@ -1,106 +1,194 @@
+"""Streamlit front end for the NFL totals model.
+
+Shows what the model thinks about every game on the slate, not only the handful
+it would bet, plus the running record so the claims can be checked.
+"""
+from __future__ import annotations
+
+import os
+from datetime import datetime
+
 import pandas as pd
 import streamlit as st
-from datetime import datetime
-import os
-import re
 
-st.set_page_config(layout='wide')
+from src.predictions import latest_prediction_path
+from config import BACKTEST_PATH, BREAK_EVEN_WIN_RATE, DECIMAL_PAYOUT, PREDICTIONS_DIR
 
-st.markdown(
-    """
-    <style>
-    .main {
-        max-width: 400px;
-        margin: auto;
+st.set_page_config(page_title="NFL Scoring Predictions", page_icon="🏈", layout="wide")
+
+
+@st.cache_data(ttl=600)
+def load_predictions() -> tuple[pd.DataFrame, str | None]:
+    path = latest_prediction_path(PREDICTIONS_DIR)
+    if path is None:
+        return pd.DataFrame(), None
+    df = pd.read_csv(path)
+    df["date"] = pd.to_datetime(df["date"])
+    for col in ("bet", "result"):
+        if col in df.columns:
+            df[col] = df[col].fillna("")
+    return df, path
+
+
+@st.cache_data(ttl=600)
+def load_backtest() -> pd.DataFrame:
+    if not os.path.exists(BACKTEST_PATH):
+        return pd.DataFrame()
+    return pd.read_csv(BACKTEST_PATH)
+
+
+predictions, source_path = load_predictions()
+
+st.title("🏈 NFL Scoring Predictions")
+
+if predictions.empty:
+    st.warning("No predictions available yet. Run `python main.py` to generate some.")
+    st.stop()
+
+updated = datetime.fromtimestamp(os.path.getmtime(source_path))
+st.caption(f"Model output last refreshed {updated:%d %b %Y, %H:%M}")
+
+# ── Slate ─────────────────────────────────────────────────────────────────────
+upcoming = predictions[predictions["result"].isin(["", "pending"])].copy()
+settled = predictions[predictions["result"].isin(["win", "loss", "push"])].copy()
+
+slate_dates = sorted(upcoming["date"].dt.date.unique())
+if slate_dates:
+    # Group the slate into weeks anchored on the first upcoming kickoff.
+    anchor = pd.Timestamp(slate_dates[0]).normalize()
+    upcoming["slate"] = ((upcoming["date"] - anchor).dt.days // 7).clip(lower=0)
+    labels = {
+        n: f"{grp['date'].min():%d %b} – {grp['date'].max():%d %b}"
+        for n, grp in upcoming.groupby("slate")
     }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-st.title("NFL Scoring Predictions")
-
-pred_dir = "predictions"
-csv_files = [f for f in os.listdir(pred_dir) if f.endswith('.csv')]
-if not csv_files:
-    raise FileNotFoundError("No predictions files found.")
-
-latest_csv = max(csv_files, key=lambda x: os.path.getmtime(os.path.join(pred_dir, x)))
-latest_path = os.path.join(pred_dir, latest_csv)
-predictions = pd.read_csv(latest_path)
-
-predictions['date'] = pd.to_datetime(predictions['date'])
-
-match = re.search(r'_(\d{8})', latest_csv)
-if match:
-    file_date = datetime.strptime(match.group(1), "%Y%m%d")
-    formatted_date = file_date.strftime("%#m/%#d/%y")
-    st.markdown(f"<p style='color:red; font-weight:bold;'>Predictions last updated on {formatted_date}</p>", unsafe_allow_html=True)
+    choice = st.selectbox(
+        "Slate", list(labels), format_func=lambda n: labels[n], index=0
+    )
+    board = upcoming[upcoming["slate"] == choice].sort_values(["date", "home_team"])
 else:
-    st.warning("Could not parse update date from filename.")
+    board = upcoming
 
-start_date = predictions['date'].min().to_pydatetime().replace(hour=0, minute=0, second=0, microsecond=0)
-predictions['week'] = ((predictions['date'] - start_date).dt.days // 7 + 1).clip(lower=1)
+flagged = board[board["bet"] != ""]
 
-today = datetime.today()
-current_week = max(1, ((today - start_date).days // 7 + 1))
-
-week_options = sorted(predictions['week'].unique())
-default_index = week_options.index(current_week) if current_week in week_options else len(week_options) - 1
-selected_week = st.selectbox('Select Week', week_options, index=default_index)
-
-display_df = predictions[predictions['week'] == selected_week].sort_values(['date', 'home_team']).copy()
-
-display_df['date'] = display_df['date'].dt.strftime("%b %d, %Y")
-display_df['total_line'] = display_df['total_line'].round(1)
-display_df['p_over'] = display_df['p_over'].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "")
-display_df['actual_total'] = display_df['actual_total'].apply(
-    lambda x: '' if pd.isnull(x) else str(int(x)) if float(x).is_integer() else str(x)
+col1, col2, col3 = st.columns(3)
+col1.metric("Games on this slate", len(board))
+col2.metric("Bets flagged", len(flagged))
+col3.metric(
+    "Largest disagreement",
+    f"{board['edge'].abs().max():.1f} pts" if not board.empty else "—",
 )
 
-display_df = display_df.rename(columns={
-    "date":            "Game Date",
-    "home_team":       "Home",
-    "away_team":       "Away",
-    "total_line":      "Total Line",
-    "p_over":          "Probability of Over",
-    "bet":             "Bet",
-    "actual_total":    "Actual",
-    "home_qb_injured": "Home QB Inj",
-    "away_qb_injured": "Away QB Inj",
-})
+if flagged.empty and not board.empty:
+    st.info(
+        "The model does not disagree with the market by enough to justify a bet on "
+        "this slate. That is the normal outcome — see *How to read this* below."
+    )
 
-cols_to_show = ["Game Date", "Home", "Away", "Total Line", "Probability of Over", "Bet"]
-cols_to_show = [c for c in cols_to_show if c in display_df.columns]
-
-st.markdown(
-    """
-    <style>
-    .stDataFrame div[data-testid="stDataFrameContainer"] div[role="gridcell"],
-    .stDataFrame div[data-testid="stDataFrameContainer"] th {
-        text-align: center !important;
-        justify-content: center !important;
-    }
-    .stDataFrame div[data-testid="stDataFrameContainer"] {
-        height: auto !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
+display = board.assign(
+    Matchup=board["away_team"] + " @ " + board["home_team"],
+    Date=board["date"].dt.strftime("%a %d %b"),
+    Line=board["total_line"].round(1),
+    Model=board["pred_total"].round(1),
+    Edge=board["edge"].round(1),
+    **{"P(over)": (board["p_over"] * 100).round(1)},
+)[["Date", "Matchup", "Line", "Model", "Edge", "P(over)", "bet", "stake"]].rename(
+    columns={"bet": "Signal", "stake": "Stake (u)"}
 )
 
-st.dataframe(display_df[cols_to_show], use_container_width=True, hide_index=True)
+st.dataframe(
+    display,
+    hide_index=True,
+    use_container_width=True,
+    column_config={
+        "Line": st.column_config.NumberColumn("Market total", format="%.1f"),
+        "Model": st.column_config.NumberColumn("Model total", format="%.1f"),
+        "Edge": st.column_config.NumberColumn(
+            "Edge", format="%+.1f", help="Model total minus market total, in points."
+        ),
+        "P(over)": st.column_config.NumberColumn("P(over)", format="%.1f%%"),
+        "Stake (u)": st.column_config.NumberColumn(
+            "Stake", format="%.2f", help="Quarter-Kelly stake in units."
+        ),
+    },
+)
+
+# ── Track record ──────────────────────────────────────────────────────────────
+st.subheader("Track record")
+
+record_col, backtest_col = st.columns(2)
+
+with record_col:
+    st.markdown("**Live flagged bets**")
+    graded = settled[settled["bet"] != ""]
+    if graded.empty:
+        st.caption("No flagged bets have been settled yet.")
+    else:
+        wins = int((graded["result"] == "win").sum())
+        losses = int((graded["result"] == "loss").sum())
+        pushes = int((graded["result"] == "push").sum())
+        decided = wins + losses
+        profit = wins * DECIMAL_PAYOUT - losses
+        st.metric(
+            f"{wins}–{losses}–{pushes}",
+            f"{profit:+.2f} u",
+            delta=f"{(wins / decided - BREAK_EVEN_WIN_RATE) * 100:+.1f}pp vs break-even"
+            if decided else None,
+        )
+        st.caption(
+            f"Only the last {len(settled)} graded games are retained in the "
+            "prediction file, so this is a recent record rather than a full history."
+        )
+
+with backtest_col:
+    st.markdown("**Walk-forward backtest**")
+    backtest = load_backtest()
+    if backtest.empty:
+        st.caption("Run `python main.py --backtest` to generate one.")
+    else:
+        st.dataframe(
+            backtest[["season", "n_games", "model_mae", "market_mae",
+                      "n_bets", "win_rate", "roi"]].round(3),
+            hide_index=True, use_container_width=True,
+            column_config={
+                "n_games": "Games", "model_mae": "Model MAE",
+                "market_mae": "Market MAE", "n_bets": "Bets",
+                "win_rate": st.column_config.NumberColumn("Win rate", format="%.3f"),
+                "roi": st.column_config.NumberColumn("ROI", format="%+.3f"),
+            },
+        )
+
+# ── Explanation ───────────────────────────────────────────────────────────────
+with st.expander("How to read this"):
+    st.markdown(
+        f"""
+**Model total** is the combined score the model expects, built from each team's
+recent scoring, pace, efficiency and quarterback form, plus kickoff weather, rest,
+injuries and the referee's historical tendency.
+
+**Edge** is that number minus the market total. The market is very good at this:
+across the backtest the model's average error is within a tenth of a point of
+simply repeating the line. So the edge is almost always small, and a small edge is
+not a bet.
+
+**Signal** only appears when the edge is large enough to pay for the vig. At -110
+you need to win **{BREAK_EVEN_WIN_RATE:.1%}** of bets to break even; the model
+translates that into the minimum number of points it must disagree by, using its
+own error distribution. Most weeks nothing qualifies.
+
+**Stake** is a quarter-Kelly position size for the probability shown — deliberately
+small, because the probability is itself an estimate.
+        """
+    )
 
 st.markdown(
     """
     <p style='font-size:12px; color:gray;'>
-    ⚠️ Disclaimer: <br>
-    This site is not a source of betting advice.<br>
-    It is intended as a coding/statistics portfolio project and monitored for entertainment purposes.<br>
-    Predictions may be inaccurate, outdated, or completely wrong.<br>
-    Do not use this information for placing bets.<br>
-    View the code on <a href='https://github.com/ed-murphy/football-predictions' target='_blank'>GitHub</a>.
+    ⚠️ <b>Disclaimer:</b> this is a statistics and engineering portfolio project, not
+    betting advice. The backtested edge is not statistically distinguishable from
+    zero. Predictions may be inaccurate, outdated, or simply wrong. Do not bet on them.
+    View the code on
+    <a href='https://github.com/ed-murphy/football-predictions' target='_blank'>GitHub</a>.
     </p>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )

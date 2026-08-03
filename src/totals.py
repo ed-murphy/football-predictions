@@ -1,116 +1,42 @@
+"""Fetching and caching betting lines from the Odds API.
+
+Keeps a running CSV of every line seen plus a dated snapshot per day, so line
+movement can be measured after the fact.
+"""
+from __future__ import annotations
+
 import logging
+import os
+from datetime import datetime, timedelta
+
+import pandas as pd
 import requests
+from dotenv import load_dotenv
+from pytz import timezone as tz
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import pandas as pd
-import os
-from dotenv import load_dotenv
-from datetime import datetime, timedelta
-from pytz import timezone as tz
-from config import TOTALS_PATH, API_MAX_RETRIES, API_BACKOFF_FACTOR, LINE_SNAPSHOTS_DIR
+
+from src.constants import TEAM_ABBREV
+from config import (
+    API_BACKOFF_FACTOR, API_MAX_RETRIES, LINE_SNAPSHOTS_DIR, ODDS_BOOKMAKER, TOTALS_PATH,
+)
 
 logger = logging.getLogger(__name__)
 
-DATA_PATH = TOTALS_PATH
-
-load_dotenv()
-API_KEY = os.getenv("API_KEY_TOTALS")
-
-TEAM_ABBREV = {
-    "Arizona Cardinals": "ARI", "Atlanta Falcons": "ATL", "Baltimore Ravens": "BAL",
-    "Buffalo Bills": "BUF", "Carolina Panthers": "CAR", "Chicago Bears": "CHI",
-    "Cincinnati Bengals": "CIN", "Cleveland Browns": "CLE", "Dallas Cowboys": "DAL",
-    "Denver Broncos": "DEN", "Detroit Lions": "DET", "Green Bay Packers": "GB",
-    "Houston Texans": "HOU", "Indianapolis Colts": "IND", "Jacksonville Jaguars": "JAX",
-    "Kansas City Chiefs": "KC", "Las Vegas Raiders": "LV", "Los Angeles Chargers": "LAC",
-    "Los Angeles Rams": "LA", "Miami Dolphins": "MIA", "Minnesota Vikings": "MIN",
-    "New England Patriots": "NE", "New Orleans Saints": "NO", "New York Giants": "NYG",
-    "New York Jets": "NYJ", "Philadelphia Eagles": "PHI", "Pittsburgh Steelers": "PIT",
-    "Seattle Seahawks": "SEA", "San Francisco 49ers": "SF", "Tampa Bay Buccaneers": "TB",
-    "Tennessee Titans": "TEN", "Washington Commanders": "WAS",
-}
+ODDS_URL = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds/"
+EASTERN = tz("US/Eastern")
+# Odds are posted months ahead in the off-season; keep a wide window so early
+# season games aren't filtered out in the spring.
+LOOKAHEAD_DAYS = 120
 
 
-def enrich_totals(totals: pd.DataFrame, team_games: pd.DataFrame | None) -> pd.DataFrame:
-    """
-    Auto-populate manual columns in totals for rows where they are missing.
-
-    - home/away_starting_qb : most recent starter for each team from historical data
-    - home/away_short_rest  : 1 if the team's last game was within 6 days of kickoff
-    - international         : 1 if kickoff is before 11:00 AM US/Eastern
-
-    Existing non-null values are preserved so manual overrides in the CSV survive.
-    """
-    eastern = tz("US/Eastern")
-    totals = totals.copy()
-
-    for col in ["home_starting_qb", "away_starting_qb",
-                "home_short_rest", "away_short_rest", "international"]:
-        if col not in totals.columns:
-            totals[col] = pd.NA
-
-    # Kickoff as ET (tz-aware) for the international check, tz-naive for arithmetic.
-    kickoff_et = pd.to_datetime(totals["commence_time"], utc=True).dt.tz_convert(eastern)
-    kickoff_naive = kickoff_et.dt.tz_localize(None)
-
-    # International: domestic NFL games never kick off before 11 AM ET.
-    mask_intl = totals["international"].isna()
-    totals.loc[mask_intl, "international"] = (kickoff_et[mask_intl].dt.hour < 11).astype(int)
-
-    if team_games is None or team_games.empty or "starting_qb" not in team_games.columns:
-        return totals
-
-    tg = team_games.copy()
-    tg["game_date"] = pd.to_datetime(tg["date"])
-
-    # Latest starting QB per team.
-    latest_qb: pd.Series = (
-        tg[tg["starting_qb"].notna()]
-        .sort_values("game_date")
-        .groupby("team")["starting_qb"]
-        .last()
-    )
-
-    # Last game date per team for short-rest calculation.
-    last_game_date: pd.Series = (
-        tg.sort_values("game_date")
-        .groupby("team")["game_date"]
-        .last()
-    )
-
-    home_abbrev = totals["home_team"].map(TEAM_ABBREV)
-    away_abbrev = totals["away_team"].map(TEAM_ABBREV)
-
-    # Starting QBs — only fill missing rows.
-    mask_hqb = totals["home_starting_qb"].isna()
-    totals.loc[mask_hqb, "home_starting_qb"] = home_abbrev[mask_hqb].map(latest_qb).values
-
-    mask_aqb = totals["away_starting_qb"].isna()
-    totals.loc[mask_aqb, "away_starting_qb"] = away_abbrev[mask_aqb].map(latest_qb).values
-
-    # Short rest: days between last game and upcoming kickoff.
-    home_last = pd.to_datetime(home_abbrev.map(last_game_date))
-    away_last = pd.to_datetime(away_abbrev.map(last_game_date))
-
-    home_gap = (kickoff_naive - home_last).dt.days
-    away_gap = (kickoff_naive - away_last).dt.days
-
-    mask_hsr = totals["home_short_rest"].isna()
-    totals.loc[mask_hsr, "home_short_rest"] = (home_gap[mask_hsr] <= 6).astype(int)
-
-    mask_asr = totals["away_short_rest"].isna()
-    totals.loc[mask_asr, "away_short_rest"] = (away_gap[mask_asr] <= 6).astype(int)
-
-    logger.info("Enriched totals: auto-populated starting QBs, short-rest flags, and international flags.")
-    return totals
-
-if not API_KEY:
-    raise ValueError("Missing API_KEY_TOTALS in .env file")
+def _api_key() -> str | None:
+    load_dotenv()
+    return os.getenv("API_KEY_TOTALS")
 
 
 def _session() -> requests.Session:
-    """Return a requests Session with automatic retry on transient errors."""
-    s = requests.Session()
+    session = requests.Session()
     retry = Retry(
         total=API_MAX_RETRIES,
         backoff_factor=API_BACKOFF_FACTOR,
@@ -118,134 +44,187 @@ def _session() -> requests.Session:
         allowed_methods=["GET"],
     )
     adapter = HTTPAdapter(max_retries=retry)
-    s.mount("https://", adapter)
-    s.mount("http://", adapter)
-    return s
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 
-def get_totals_from_api(api_key=API_KEY):
-    url = (
-        f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds/"
-        f"?apiKey={api_key}&regions=us&markets=totals&oddsFormat=american"
+def get_totals_from_api(api_key: str) -> pd.DataFrame:
+    """Current totals and spreads for upcoming games from the configured book."""
+    response = _session().get(
+        ODDS_URL,
+        params={"apiKey": api_key, "regions": "us", "markets": "totals,spreads",
+                "oddsFormat": "american"},
+        timeout=30,
     )
-    resp = _session().get(url, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    games = []
+    response.raise_for_status()
 
-    eastern = tz("US/Eastern")
-    now_eastern = datetime.now(eastern)
+    cutoff = datetime.now(EASTERN) + timedelta(days=LOOKAHEAD_DAYS)
+    rows = []
 
-    days_ahead = (1 - now_eastern.weekday()) % 7
-    next_tuesday = (now_eastern + timedelta(days=days_ahead)).replace(
-        hour=23, minute=59, second=59, microsecond=0
-    )
-    # During the off-season, odds may be posted months ahead; extend the window
-    # to 120 days so we don't filter out early-season games posted in the spring/summer.
-    far_future = now_eastern + timedelta(days=120)
-    cutoff = max(next_tuesday, far_future)
-
-    for game in data:
-        if not game.get('bookmakers'):
+    for game in response.json():
+        book = next(
+            (b for b in game.get("bookmakers", [])
+             if b["key"].lower() == ODDS_BOOKMAKER or b["title"].lower() == ODDS_BOOKMAKER),
+            None,
+        )
+        if book is None:
             continue
 
-        # Parse commence_time as UTC
-        commence_time_utc = datetime.fromisoformat(game['commence_time'].replace("Z", "+00:00"))
-        commence_time_eastern = commence_time_utc.astimezone(eastern)
-
-        if commence_time_eastern > cutoff:
+        kickoff = pd.Timestamp(game["commence_time"]).tz_convert(EASTERN)
+        if kickoff > cutoff:
             continue
 
-        # Only consider DraftKings
-        dk_bookmakers = [b for b in game['bookmakers'] if b['title'].lower() == 'draftkings']
-        if not dk_bookmakers:
-            continue  # skip if DraftKings not available
+        row = {"home_team": game["home_team"], "away_team": game["away_team"],
+               "commence_time": kickoff, "bookmaker": book["title"]}
 
-        bookmaker = dk_bookmakers[0]  # take the DraftKings bookmaker
-        for market in bookmaker['markets']:
-            if market['key'] == 'totals':
-                for outcome in market['outcomes']:
-                    if outcome['name'] == 'Over':
-                        # Convert to Eastern timezone, tz-aware
-                        commence_time_eastern = commence_time_utc.astimezone(eastern)
-                        games.append({
-                            'home_team': game['home_team'],
-                            'away_team': game['away_team'],
-                            'commence_time': commence_time_eastern,
-                            'total_line': outcome['point'],
-                            'bookmaker': bookmaker['title']
-                        })
+        for market in book["markets"]:
+            if market["key"] == "totals":
+                over = next((o for o in market["outcomes"] if o["name"] == "Over"), None)
+                if over:
+                    row["total_line"] = over["point"]
+            elif market["key"] == "spreads":
+                home = next(
+                    (o for o in market["outcomes"] if o["name"] == game["home_team"]), None
+                )
+                if home:
+                    # nflverse convention: positive spread_line = home favoured.
+                    row["spread_line"] = -home["point"]
 
-    return pd.DataFrame(games)
+        if "total_line" in row:
+            rows.append(row)
 
-
-def get_totals(path=DATA_PATH, api_key=API_KEY, use_cache_only=False, team_games=None):
-    eastern = tz("US/Eastern")
-
-    if os.path.exists(path):
-        logger.info("Reading existing Vegas totals from %s...", path)
-        existing_df = pd.read_csv(path)
-
-        # Normalize datetime
-        existing_df['commence_time'] = pd.to_datetime(existing_df['commence_time'], errors='coerce', utc=True)
-        existing_df['commence_time'] = existing_df['commence_time'].dt.tz_convert(eastern)
-
-        if use_cache_only:
-            logger.info("Using cached totals only. Skipping API fetch.")
-            result = enrich_totals(existing_df, team_games)
-            result.to_csv(path, index=False)
-            return result
-
-        # Get new data
-        logger.info("Fetching new and updated game totals from API...")
-        new_df = get_totals_from_api(api_key)
-
-        if new_df.empty:
-            logger.warning("API returned no games (off-season or no upcoming games). Using cached totals only.")
-            result = enrich_totals(existing_df, team_games)
-            result.to_csv(path, index=False)
-            return result
-
-        # Normalize new datetime
-        new_df['commence_time'] = pd.to_datetime(new_df['commence_time'], utc=True)
-        new_df['commence_time'] = new_df['commence_time'].dt.tz_convert(eastern)
-
-        # Combine and drop duplicates
-        combined = pd.concat([existing_df, new_df], ignore_index=True)
-        combined = combined.drop_duplicates(
-            subset=['home_team', 'away_team', 'commence_time', 'bookmaker'],
-            keep='last'
-        ).sort_values(by='commence_time')
-
-        result = enrich_totals(combined, team_games)
-        result.to_csv(path, index=False)
-        _save_line_snapshot(result)
-        logger.info("Appended new games. Saved updated file to %s.", path)
-        return result
-
-    else:
-        if use_cache_only:
-            raise FileNotFoundError(f"No cached file found at {path}, cannot skip API fetch.")
-        logger.info("No existing file found. Downloading fresh totals...")
-        df = get_totals_from_api(api_key)
-        df['commence_time'] = pd.to_datetime(df['commence_time'], utc=True)
-        df['commence_time'] = df['commence_time'].dt.tz_convert(eastern)
-        result = enrich_totals(df, team_games)
-        result.to_csv(path, index=False)
-        _save_line_snapshot(result)
-        logger.info("Saved new file to %s.", path)
-        return result
+    logger.info("Odds API returned %d games with a posted total.", len(rows))
+    return pd.DataFrame(rows)
 
 
-def _save_line_snapshot(totals: pd.DataFrame) -> None:
-    """Save a dated snapshot of current lines to LINE_SNAPSHOTS_DIR (once per day)."""
-    os.makedirs(LINE_SNAPSHOTS_DIR, exist_ok=True)
-    today = datetime.today().strftime("%Y%m%d")
-    path = os.path.join(LINE_SNAPSHOTS_DIR, f"lines_{today}.csv")
+def enrich_totals(totals: pd.DataFrame, team_games: pd.DataFrame | None) -> pd.DataFrame:
+    """Auto-populate the columns a user would otherwise fill in by hand.
+
+    `home/away_starting_qb` come from each team's most recent game and
+    `international` from the kickoff hour. Existing non-null values are preserved,
+    so manual overrides in the CSV survive a refresh.
+    """
+    totals = totals.copy()
+    for col in ("home_starting_qb", "away_starting_qb", "international"):
+        if col not in totals.columns:
+            totals[col] = pd.NA
+
+    kickoff = pd.to_datetime(totals["commence_time"], utc=True).dt.tz_convert(EASTERN)
+    # No domestic NFL game kicks off before 11am Eastern.
+    needs_intl = totals["international"].isna()
+    totals.loc[needs_intl, "international"] = (
+        kickoff[needs_intl].dt.hour < 11
+    ).astype(int)
+
+    if team_games is None or team_games.empty or "starting_qb" not in team_games.columns:
+        return totals
+
+    latest_qb = (
+        team_games[team_games["starting_qb"].notna()]
+        .sort_values("date").groupby("team")["starting_qb"].last()
+    )
+    for side in ("home", "away"):
+        col = f"{side}_starting_qb"
+        needs = totals[col].isna()
+        abbrev = totals[f"{side}_team"].map(lambda t: TEAM_ABBREV.get(t, t))
+        totals.loc[needs, col] = abbrev[needs].map(latest_qb).to_numpy()
+
+    logger.info("Enriched totals with starting quarterbacks and international flags.")
+    return totals
+
+
+def get_totals(path: str = TOTALS_PATH, use_cache_only: bool = False,
+               team_games: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Return the current slate, refreshing from the API unless told not to."""
+    cached = _read_cache(path)
+
+    if use_cache_only:
+        if cached is None:
+            raise FileNotFoundError(f"No cached totals at {path} and --use-cached-totals set.")
+        logger.info("Using cached totals only.")
+        return _finalise(cached, path, team_games, snapshot=False)
+
+    api_key = _api_key()
+    if not api_key:
+        if cached is None:
+            raise ValueError("Missing API_KEY_TOTALS in .env and no cached totals to fall back on.")
+        logger.warning("Missing API_KEY_TOTALS in .env; falling back to cached totals.")
+        return _finalise(cached, path, team_games, snapshot=False)
+
+    logger.info("Fetching current lines from the Odds API...")
+    fresh = get_totals_from_api(api_key)
+
+    if fresh.empty:
+        if cached is None:
+            raise RuntimeError("Odds API returned no games and there is no cache to fall back on.")
+        logger.warning("Odds API returned no games (off-season?). Using cached totals.")
+        return _finalise(cached, path, team_games, snapshot=False)
+
+    combined = fresh if cached is None else pd.concat([cached, fresh], ignore_index=True)
+    return _finalise(_dedupe(combined), path, team_games, snapshot=True)
+
+
+def _dedupe(totals: pd.DataFrame) -> pd.DataFrame:
+    """One row per fixture, holding the most recently seen line.
+
+    Deduplicating on the exact `commence_time` is not enough: kickoff times shift
+    by minutes as the schedule firms up, which used to leave the same game in the
+    cache several times over and produce duplicate predictions downstream.
+    """
+    totals = totals.sort_values("commence_time").copy()
+
+    # Games that kicked off over a week ago are settled; keeping them means every
+    # later run re-scores fixtures whose result is already known.
+    stale = totals["commence_time"] < pd.Timestamp.now(EASTERN) - pd.Timedelta(days=7)
+    if stale.any():
+        logger.info("Pruning %d settled fixture(s) from the odds cache.", int(stale.sum()))
+        totals = totals[~stale]
+
+    totals["_kickoff_date"] = totals["commence_time"].dt.date
+    deduped = totals.drop_duplicates(
+        subset=["home_team", "away_team", "_kickoff_date", "bookmaker"], keep="last"
+    )
+    if len(deduped) < len(totals):
+        logger.info("Collapsed %d duplicate fixture rows.", len(totals) - len(deduped))
+    return deduped.drop(columns="_kickoff_date").sort_values("commence_time")
+
+
+def _read_cache(path: str) -> pd.DataFrame | None:
     if not os.path.exists(path):
-        snap = totals[["home_team", "away_team", "total_line"]].copy()
-        # Store abbreviated team names so they match upcoming.py after TEAM_ABBREV conversion
-        snap["home_team"] = snap["home_team"].map(TEAM_ABBREV).fillna(snap["home_team"])
-        snap["away_team"] = snap["away_team"].map(TEAM_ABBREV).fillna(snap["away_team"])
-        snap.to_csv(path, index=False)
-        logger.info("Saved opening line snapshot to %s.", path)
+        return None
+    logger.info("Reading cached totals from %s...", path)
+    cached = pd.read_csv(path)
+    cached["commence_time"] = (
+        pd.to_datetime(cached["commence_time"], errors="coerce", utc=True)
+        .dt.tz_convert(EASTERN)
+    )
+    return _dedupe(cached[cached["commence_time"].notna()])
+
+
+def _finalise(totals: pd.DataFrame, path: str, team_games: pd.DataFrame | None,
+              snapshot: bool) -> pd.DataFrame:
+    result = enrich_totals(totals, team_games)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    result.to_csv(path, index=False)
+    if snapshot:
+        save_line_snapshot(result)
+    return result
+
+
+def save_line_snapshot(totals: pd.DataFrame, snapshot_dir: str = LINE_SNAPSHOTS_DIR) -> None:
+    """Write one dated snapshot of the current lines per day.
+
+    The first snapshot of a week stands in for the opening line, which is what
+    `line_movement` is measured against.
+    """
+    os.makedirs(snapshot_dir, exist_ok=True)
+    path = os.path.join(snapshot_dir, f"lines_{datetime.today():%Y%m%d}.csv")
+    if os.path.exists(path):
+        return
+
+    snap = totals[["home_team", "away_team", "total_line"]].copy()
+    for col in ("home_team", "away_team"):
+        snap[col] = snap[col].map(lambda t: TEAM_ABBREV.get(t, t))
+    snap.to_csv(path, index=False)
+    logger.info("Saved line snapshot to %s.", path)

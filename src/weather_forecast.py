@@ -1,21 +1,35 @@
+"""Kickoff weather forecasts for upcoming games (OpenWeather 5-day/3-hour API).
+
+Units are Fahrenheit and miles per hour throughout, matching the `temp` / `wind`
+columns nflverse ships for completed games. Getting this wrong is silent and
+expensive: the model would be trained on one scale and served another.
+"""
+from __future__ import annotations
+
 import logging
 import os
+from datetime import datetime, timezone
+
 import pandas as pd
 import requests
+from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from datetime import datetime, timezone
-from dotenv import load_dotenv
-from config import WEATHER_FORECAST_PATH, API_MAX_RETRIES, API_BACKOFF_FACTOR
+
+from src.constants import (
+    DOME_TEAMS, INDOOR_TEMP_F, INDOOR_WIND_MPH, STADIUM_COORDS, TEAM_ABBREV,
+)
+from config import API_BACKOFF_FACTOR, API_MAX_RETRIES, WEATHER_FORECAST_PATH
 
 logger = logging.getLogger(__name__)
 
-WEATHER_PATH = WEATHER_FORECAST_PATH
+FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
+# Beyond this the 5-day forecast has nothing to say; fall back to seasonal normals.
+FORECAST_HORIZON_DAYS = 5
 
 
 def _session() -> requests.Session:
-    """Return a requests Session with automatic retry on transient errors."""
-    s = requests.Session()
+    session = requests.Session()
     retry = Retry(
         total=API_MAX_RETRIES,
         backoff_factor=API_BACKOFF_FACTOR,
@@ -23,147 +37,131 @@ def _session() -> requests.Session:
         allowed_methods=["GET"],
     )
     adapter = HTTPAdapter(max_retries=retry)
-    s.mount("https://", adapter)
-    s.mount("http://", adapter)
-    return s
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
-# Mapping full team names -> 3-letter abbreviations
-TEAM_ABBREV = {
-    "Arizona Cardinals": "ARI", "Atlanta Falcons": "ATL", "Baltimore Ravens": "BAL",
-    "Buffalo Bills": "BUF", "Carolina Panthers": "CAR", "Chicago Bears": "CHI",
-    "Cincinnati Bengals": "CIN", "Cleveland Browns": "CLE", "Dallas Cowboys": "DAL",
-    "Denver Broncos": "DEN", "Detroit Lions": "DET", "Green Bay Packers": "GB",
-    "Houston Texans": "HOU", "Indianapolis Colts": "IND", "Jacksonville Jaguars": "JAX",
-    "Kansas City Chiefs": "KC", "Las Vegas Raiders": "LV", "Los Angeles Chargers": "LAC",
-    "Los Angeles Rams": "LA", "Miami Dolphins": "MIA", "Minnesota Vikings": "MIN",
-    "New England Patriots": "NE", "New Orleans Saints": "NO", "New York Giants": "NYG",
-    "New York Jets": "NYJ", "Philadelphia Eagles": "PHI", "Pittsburgh Steelers": "PIT",
-    "Seattle Seahawks": "SEA", "San Francisco 49ers": "SF", "Tampa Bay Buccaneers": "TB",
-    "Tennessee Titans": "TEN", "Washington Commanders": "WAS"
-}
 
-# Coordinates for stadiums
-TEAM_COORDS = {
-    "Arizona Cardinals": {"lat": 33.5275, "lon": -112.2625},
-    "Atlanta Falcons": {"lat": 33.755, "lon": -84.4008},
-    "Baltimore Ravens": {"lat": 39.2779, "lon": -76.6227},
-    "Buffalo Bills": {"lat": 42.7738, "lon": -78.7865},
-    "Carolina Panthers": {"lat": 35.2251, "lon": -80.8529},
-    "Chicago Bears": {"lat": 41.8623, "lon": -87.6167},
-    "Cincinnati Bengals": {"lat": 39.0955, "lon": -84.5161},
-    "Cleveland Browns": {"lat": 41.5061, "lon": -81.6995},
-    "Dallas Cowboys": {"lat": 32.7473, "lon": -97.0945},
-    "Denver Broncos": {"lat": 39.7439, "lon": -105.0201},
-    "Detroit Lions": {"lat": 42.3400, "lon": -83.0456},
-    "Green Bay Packers": {"lat": 44.5013, "lon": -88.0622},
-    "Houston Texans": {"lat": 29.6847, "lon": -95.4107},
-    "Indianapolis Colts": {"lat": 39.7640, "lon": -86.1639},
-    "Jacksonville Jaguars": {"lat": 30.3240, "lon": -81.6375},
-    "Kansas City Chiefs": {"lat": 39.0489, "lon": -94.4839},
-    "Las Vegas Raiders": {"lat": 36.0908, "lon": -115.1830},
-    "Los Angeles Chargers": {"lat": 33.9535, "lon": -118.3392},
-    "Los Angeles Rams": {"lat": 34.0141, "lon": -118.2872},
-    "Miami Dolphins": {"lat": 25.9580, "lon": -80.2389},
-    "Minnesota Vikings": {"lat": 44.9733, "lon": -93.2572},
-    "New England Patriots": {"lat": 42.0909, "lon": -71.2643},
-    "New Orleans Saints": {"lat": 29.9511, "lon": -90.0812},
-    "New York Giants": {"lat": 40.8135, "lon": -74.0744},
-    "New York Jets": {"lat": 40.8135, "lon": -74.0744},
-    "Philadelphia Eagles": {"lat": 39.9008, "lon": -75.1675},
-    "Pittsburgh Steelers": {"lat": 40.4469, "lon": -80.0158},
-    "Seattle Seahawks": {"lat": 47.5952, "lon": -122.3316},
-    "San Francisco 49ers": {"lat": 37.4030, "lon": -121.9700},
-    "Tampa Bay Buccaneers": {"lat": 27.9759, "lon": -82.5033},
-    "Tennessee Titans": {"lat": 36.1662, "lon": -86.7713},
-    "Washington Commanders": {"lat": 38.9076, "lon": -77.0209}
-}
+def _to_abbrev(team: str) -> str:
+    """Accept either a full team name or an abbreviation."""
+    return TEAM_ABBREV.get(team, team)
 
-# Dome teams
-dome_teams = {
-    "Arizona Cardinals", "Atlanta Falcons", "Dallas Cowboys", "Detroit Lions", "Houston Texans",
-    "Indianapolis Colts", "Oakland Raiders", "Los Angeles Chargers", "Los Angeles Rams", "Minnesota Vikings", "New Orleans Saints"
-}
 
-def fetch_game_weather(home_team, kickoff_time, api_key):
-    """Fetch weather for a single game or return dome defaults."""
-    if home_team in dome_teams:
-        # Dome defaults: 21.1°C, 0 kph
-        return {
-            "home_team": home_team,
-            "kickoff_time": kickoff_time,
-            "temperature": 21.1,
-            "wind_speed": 0,
-            "weather_status": "indoor/dome",
-        }
+def fetch_stadium_forecast(team: str, kickoff_times: list[pd.Timestamp], api_key: str,
+                           session: requests.Session) -> list[dict]:
+    """Forecast at each kickoff for one stadium. One API call per venue, not per game."""
+    abbrev = _to_abbrev(team)
 
-    coords = TEAM_COORDS.get(home_team)
-    if not coords:
-        print(f"[WARN] No coordinates for {home_team}, skipping.")
-        return None
+    if abbrev in DOME_TEAMS:
+        return [
+            {"home_team": abbrev, "kickoff_time": t, "temperature": INDOOR_TEMP_F,
+             "wind_speed": INDOOR_WIND_MPH, "weather_status": "indoor/dome"}
+            for t in kickoff_times
+        ]
 
+    coords = STADIUM_COORDS.get(abbrev)
+    if coords is None:
+        logger.warning("No stadium coordinates for %s; skipping forecast.", team)
+        return []
+
+    lat, lon = coords
     try:
-        url = (
-            f"http://api.openweathermap.org/data/2.5/forecast"
-            f"?lat={coords['lat']}&lon={coords['lon']}&appid={api_key}&units=imperial"
+        response = session.get(
+            FORECAST_URL,
+            params={"lat": lat, "lon": lon, "appid": api_key, "units": "imperial"},
+            timeout=30,
         )
-        response = _session().get(url, timeout=30)
         response.raise_for_status()
-        data = response.json()
-        forecasts = data["list"]
+        slots = response.json()["list"]
+    except Exception as exc:  # network, auth, or schema change — degrade, don't crash
+        logger.error("Weather fetch failed for %s: %s", team, exc)
+        return []
 
+    rows = []
+    for kickoff in kickoff_times:
         closest = min(
-            forecasts,
-            key=lambda f: abs(datetime.fromtimestamp(f["dt"], tz=timezone.utc) - kickoff_time)
+            slots,
+            key=lambda s: abs(datetime.fromtimestamp(s["dt"], tz=timezone.utc) - kickoff),
         )
-
-        # Convert temperature from F to C, wind speed from mph to kph
-        temp_c = (closest["main"]["temp"] - 32) * 5.0 / 9.0
-        wind_kph = closest["wind"].get("speed", 0) * 1.60934
-        return {
-            "home_team": home_team,
-            "kickoff_time": kickoff_time,
-            "temperature": temp_c,
-            "wind_speed": wind_kph,
+        gap_hours = abs(
+            datetime.fromtimestamp(closest["dt"], tz=timezone.utc) - kickoff
+        ).total_seconds() / 3600
+        if gap_hours > 24 * FORECAST_HORIZON_DAYS:
+            logger.info(
+                "%s kickoff %s is beyond the forecast horizon; leaving weather unknown.",
+                abbrev, kickoff,
+            )
+            continue
+        rows.append({
+            "home_team": abbrev,
+            "kickoff_time": kickoff,
+            "temperature": closest["main"]["temp"],          # already Fahrenheit
+            "wind_speed": closest["wind"].get("speed", 0.0),  # already mph
             "weather_status": closest["weather"][0]["description"],
-        }
+        })
+    return rows
 
-    except Exception as e:
-        logger.error("Weather fetch failed for %s at %s: %s", home_team, kickoff_time, e)
-        return None
 
-def get_forecasted_weather(upcoming_team_games: pd.DataFrame) -> pd.DataFrame:
-    """Fetch weather forecasts for all upcoming games sequentially."""
+def get_forecasted_weather(upcoming_games: pd.DataFrame) -> pd.DataFrame:
+    """Return one forecast row per upcoming game, using a cached CSV when it is fresh.
+
+    Columns: home_team (abbrev), kickoff_time (UTC), temperature (F),
+    wind_speed (mph), weather_status.
+    """
     load_dotenv()
     api_key = os.getenv("API_KEY_WEATHER")
+
+    upcoming = upcoming_games.copy()
+    upcoming["home_team"] = upcoming["home_team"].map(_to_abbrev)
+    upcoming["kickoff_time"] = pd.to_datetime(upcoming["commence_time"], utc=True)
+
+    cached = _read_cache(set(upcoming["home_team"].dropna()))
+    if cached is not None:
+        return cached
+
     if not api_key:
-        raise ValueError("Missing API_KEY_WEATHER in .env file")
+        logger.warning(
+            "Missing API_KEY_WEATHER — upcoming games will use seasonal-normal weather."
+        )
+        return _empty_forecast()
 
-    if os.path.exists(WEATHER_PATH):
-        df = pd.read_csv(WEATHER_PATH, parse_dates=['kickoff_time'])
-        # Staleness check: if the cached games don't overlap with this week's games, re-fetch
-        cache_home_teams = set(df['home_team'].dropna())
-        upcoming_home_teams = set(upcoming_team_games['home_team'].dropna())
-        if not cache_home_teams.intersection(upcoming_home_teams):
-            logger.info("Weather cache is stale (no overlap with upcoming games). Re-fetching...")
-            os.remove(WEATHER_PATH)
-        else:
-            logger.info("Reading cached weather forecast for upcoming games from %s...", WEATHER_PATH)
-            if "temperature_F" in df.columns:
-                df["temperature"] = (df["temperature_F"] - 32) * 5.0 / 9.0
-            if "wind_speed_mph" in df.columns:
-                df["wind_speed"] = df["wind_speed_mph"] * 1.60934
-            return df
+    session = _session()
+    rows: list[dict] = []
+    for team, group in upcoming.groupby("home_team"):
+        rows.extend(
+            fetch_stadium_forecast(team, list(group["kickoff_time"]), api_key, session)
+        )
 
-    upcoming_team_games = upcoming_team_games.copy()
-    upcoming_team_games['kickoff_time'] = pd.to_datetime(upcoming_team_games['commence_time'], utc=True)
+    forecast = pd.DataFrame(rows, columns=_empty_forecast().columns)
+    os.makedirs(os.path.dirname(WEATHER_FORECAST_PATH) or ".", exist_ok=True)
+    forecast.to_csv(WEATHER_FORECAST_PATH, index=False)
+    logger.info("Saved %d weather forecasts to %s", len(forecast), WEATHER_FORECAST_PATH)
+    return forecast
 
-    weather_data = []
-    for _, row in upcoming_team_games.iterrows():
-        result = fetch_game_weather(row['home_team'], row['kickoff_time'], api_key)
-        if result:
-            weather_data.append(result)
 
-    df = pd.DataFrame(weather_data)
-    df.to_csv(WEATHER_PATH, index=False)
-    logger.info("Saved weather forecast for upcoming games to %s", WEATHER_PATH)
-    return df
+def _empty_forecast() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=["home_team", "kickoff_time", "temperature", "wind_speed", "weather_status"]
+    )
+
+
+def _read_cache(upcoming_home_teams: set[str]) -> pd.DataFrame | None:
+    """Return the cached forecast if it still covers the games we're predicting."""
+    if not os.path.exists(WEATHER_FORECAST_PATH):
+        return None
+
+    cached = pd.read_csv(WEATHER_FORECAST_PATH, parse_dates=["kickoff_time"])
+    if cached.empty:
+        return None
+
+    cached["home_team"] = cached["home_team"].map(_to_abbrev)
+    if not set(cached["home_team"].dropna()) & upcoming_home_teams:
+        logger.info("Weather cache does not cover this slate; re-fetching.")
+        os.remove(WEATHER_FORECAST_PATH)
+        return None
+
+    if cached["kickoff_time"].dt.tz is None:
+        cached["kickoff_time"] = cached["kickoff_time"].dt.tz_localize("UTC")
+
+    logger.info("Using cached weather forecast from %s.", WEATHER_FORECAST_PATH)
+    return cached

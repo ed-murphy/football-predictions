@@ -1,11 +1,20 @@
+# Environments
+.venv/
 download/download_env/
 model_env/
 .env
-__pycache__
-.venv/
-old_predictions/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Generated artefacts
 data/
 model/
-.vscode/launch.json
-*.log
 logs/
+*.log
+old_predictions/
+
+# Editor
+.vscode/launch.json
