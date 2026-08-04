@@ -101,21 +101,22 @@ def get_totals_from_api(api_key: str) -> pd.DataFrame:
 def enrich_totals(totals: pd.DataFrame, team_games: pd.DataFrame | None) -> pd.DataFrame:
     """Auto-populate the columns a user would otherwise fill in by hand.
 
-    `home/away_starting_qb` come from each team's most recent game and
-    `international` from the kickoff hour. Existing non-null values are preserved,
-    so manual overrides in the CSV survive a refresh.
+    `home/away_starting_qb` come from each team's most recent game. Existing
+    non-null values are preserved, so manual overrides in the CSV survive a refresh.
+
+    Venue-derived columns deliberately do *not* live here. `basic.add_venue_features`
+    recomputes `international` from the schedule's stadium name on every run, so a
+    copy cached in this file would be ignored downstream while still looking like a
+    setting worth editing.
     """
     totals = totals.copy()
-    for col in ("home_starting_qb", "away_starting_qb", "international"):
+    for col in ("home_starting_qb", "away_starting_qb"):
         if col not in totals.columns:
             totals[col] = pd.NA
 
-    kickoff = pd.to_datetime(totals["commence_time"], utc=True).dt.tz_convert(EASTERN)
-    # No domestic NFL game kicks off before 11am Eastern.
-    needs_intl = totals["international"].isna()
-    totals.loc[needs_intl, "international"] = (
-        kickoff[needs_intl].dt.hour < 11
-    ).astype(int)
+    # Drop the flag older caches still carry: it was derived from the kickoff hour,
+    # which misses evening kickoffs abroad such as the 2026 Melbourne opener.
+    totals = totals.drop(columns="international", errors="ignore")
 
     if team_games is None or team_games.empty or "starting_qb" not in team_games.columns:
         return totals
@@ -130,7 +131,7 @@ def enrich_totals(totals: pd.DataFrame, team_games: pd.DataFrame | None) -> pd.D
         abbrev = totals[f"{side}_team"].map(lambda t: TEAM_ABBREV.get(t, t))
         totals.loc[needs, col] = abbrev[needs].map(latest_qb).to_numpy()
 
-    logger.info("Enriched totals with starting quarterbacks and international flags.")
+    logger.info("Enriched totals with starting quarterbacks.")
     return totals
 
 

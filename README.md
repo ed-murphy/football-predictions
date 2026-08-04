@@ -151,8 +151,12 @@ wrong for the eight or so games a season played abroad.
 ### Overriding inputs by hand
 
 `data/nfl_over_unders.csv` is regenerated each run but **existing non-null values are
-preserved**, so you can correct a starting quarterback or an international flag and
-the correction will survive the next refresh.
+preserved**, so you can correct a starting quarterback and the correction will survive
+the next refresh.
+
+Whether a game is international is *not* editable here: it is derived from the
+schedule's stadium name on every run (see `src/venues.py`). Older copies of this file
+carry a stale `international` column, which is now dropped on refresh.
 
 ---
 
