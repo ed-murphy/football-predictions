@@ -1,24 +1,15 @@
 # Direct dependencies only - transitive ones are resolved by pip.
-# (The previous file was a UTF-16 `pip freeze` dump, which pip cannot read on
-# non-Windows machines, and pinned 40 packages the project never imported.)
 
-# Data handling
 pandas==2.3.2
 numpy==2.3.2
-pyarrow==21.0.0
-
-# Modelling
-scikit-learn==1.7.1
-scipy==1.16.1
-joblib==1.5.2
-
-# External data
 requests==2.32.5
 python-dotenv==1.1.1
-pytz==2025.2
 
 # App
 streamlit==1.49.1
 
 # Tests
 pytest==9.1.1
+
+# Only for research/play_by_play_scan.py, which reads nflverse parquet files:
+#   pip install pyarrow

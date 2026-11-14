@@ -1,12 +1,7 @@
-"""Shared lookup tables.
-
-These were previously duplicated across totals.py, upcoming.py, weather.py and
-weather_forecast.py, which meant a team relocation or rename had to be applied in
-four places. Import them from here instead.
-"""
+"""Shared lookup tables."""
 from __future__ import annotations
 
-# Full team name (as returned by the odds API) -> nflverse 3-letter code
+# Full team name (as the odds API returns it) -> nflverse team code
 TEAM_ABBREV = {
     "Arizona Cardinals": "ARI", "Atlanta Falcons": "ATL", "Baltimore Ravens": "BAL",
     "Buffalo Bills": "BUF", "Carolina Panthers": "CAR", "Chicago Bears": "CHI",
@@ -21,18 +16,7 @@ TEAM_ABBREV = {
     "Tennessee Titans": "TEN", "Washington Commanders": "WAS",
 }
 
-DIVISION_MAP = {
-    "ARI": "NFC West", "ATL": "NFC South", "BAL": "AFC North", "BUF": "AFC East",
-    "CAR": "NFC South", "CHI": "NFC North", "CIN": "AFC North", "CLE": "AFC North",
-    "DAL": "NFC East", "DEN": "AFC West", "DET": "NFC North", "GB": "NFC North",
-    "HOU": "AFC South", "IND": "AFC South", "JAX": "AFC South", "KC": "AFC West",
-    "LAC": "AFC West", "LA": "NFC West", "LV": "AFC West", "MIA": "AFC East",
-    "MIN": "NFC North", "NE": "AFC East", "NO": "NFC South", "NYG": "NFC East",
-    "NYJ": "AFC East", "PHI": "NFC East", "PIT": "AFC North", "SEA": "NFC West",
-    "SF": "NFC West", "TB": "NFC South", "TEN": "AFC South", "WAS": "NFC East",
-}
-
-# Home stadium lat/lon, used for weather forecast lookups.
+# Home stadium (lat, lon) — where the wind forecast is looked up for a home game.
 STADIUM_COORDS = {
     "ARI": (33.5275, -112.2625), "ATL": (33.7550, -84.4008), "BAL": (39.2779, -76.6227),
     "BUF": (42.7738, -78.7865), "CAR": (35.2251, -80.8529), "CHI": (41.8623, -87.6167),
@@ -46,16 +30,3 @@ STADIUM_COORDS = {
     "SEA": (47.5952, -122.3316), "SF": (37.4030, -121.9700), "TB": (27.9759, -82.5033),
     "TEN": (36.1662, -86.7713), "WAS": (38.9076, -77.0209),
 }
-
-# Teams whose own stadium is indoors. Only a fallback: the venue a game is played
-# at comes from the schedule (see src/venues.py), and this is used when a fixture
-# has no schedule row yet.
-DOME_TEAMS = {"ARI", "ATL", "DAL", "DET", "HOU", "IND", "LV", "LA", "LAC", "MIN", "NO"}
-
-# nflverse `roof` values that mean "no weather"
-INDOOR_ROOFS = {"dome", "closed"}
-
-# Neutral values substituted for indoor games so the model sees a constant
-# rather than a missing value.
-INDOOR_TEMP_F = 70.0
-INDOOR_WIND_MPH = 0.0

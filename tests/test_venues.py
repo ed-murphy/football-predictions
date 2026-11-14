@@ -10,8 +10,7 @@ those shapes is covered here.
 """
 import pandas as pd
 
-from src.basic import add_venue_features
-from src.venues import is_international, lookup_venue
+from src.venues import add_venue_features, is_international, lookup_venue
 
 
 def _games(**overrides):
@@ -70,7 +69,16 @@ def test_venue_table_overrides_a_wrong_roof():
     out = add_venue_features(_games(
         location="Neutral", stadium="Melbourne Cricket Ground", roof="dome",
     ))
-    assert out["is_dome"].iloc[0] == 0
+    assert out["open_air"].iloc[0] == 1
+
+
+def test_international_game_gets_the_real_venue_coordinates():
+    """The forecast must be for Melbourne, not Los Angeles."""
+    out = add_venue_features(_games(
+        location="Neutral", stadium="Melbourne Cricket Ground", roof="dome",
+    ))
+    assert round(out["venue_lat"].iloc[0]) == -38
+    assert round(out["venue_lon"].iloc[0]) == 145
 
 
 def test_evening_kickoff_abroad_is_still_international():
@@ -108,7 +116,30 @@ def test_unidentified_international_venue_is_not_given_the_home_roof():
         roof="closed", gametime="09:30",
     ))
     assert out["international"].iloc[0] == 1
-    assert out["is_dome"].iloc[0] == 0
+    assert out["open_air"].iloc[0] == 1
+
+
+def test_unplaced_neutral_site_has_no_coordinates():
+    """Better no forecast than a forecast for the wrong city."""
+    out = add_venue_features(_games(
+        home_team="IND", location="Neutral", stadium="Lucas Oil Stadium",
+        roof="closed", gametime="09:30",
+    ))
+    assert out["venue_lat"].isna().iloc[0]
+
+
+# ── Roofs ─────────────────────────────────────────────────────────────────────
+
+def test_retractable_roof_listed_blank_is_not_open_air():
+    """Upcoming games at retractable stadiums have no roof state; assume shut."""
+    out = add_venue_features(_games(home_team="DAL", stadium="AT&T Stadium", roof=None))
+    assert out["open_air"].iloc[0] == 0
+
+
+def test_outdoor_home_game_is_open_air_at_the_home_stadium():
+    out = add_venue_features(_games(home_team="BUF", stadium="Highmark Stadium", roof="outdoors"))
+    assert out["open_air"].iloc[0] == 1
+    assert round(out["venue_lat"].iloc[0], 1) == 42.8
 
 
 # ── Domestic games must not be caught ─────────────────────────────────────────
@@ -117,7 +148,7 @@ def test_ordinary_home_game_is_neither_neutral_nor_international():
     out = add_venue_features(_games())
     assert out["international"].iloc[0] == 0
     assert out["neutral_site"].iloc[0] == 0
-    assert out["is_dome"].iloc[0] == 1
+    assert out["open_air"].iloc[0] == 0
 
 
 def test_domestic_neutral_site_is_neutral_but_not_international():

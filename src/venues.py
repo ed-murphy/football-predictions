@@ -2,7 +2,7 @@
 
 Venue cannot be inferred from the home team. Roughly eight games a season are
 played at a neutral site, and for those the home team's stadium tells you nothing
-about the weather, the travel, or the kickoff body clock.
+about the weather — which is the one thing this project bets on.
 
 nflverse is only partly helpful here:
 
@@ -21,6 +21,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+import numpy as np
+import pandas as pd
+
+from src.constants import STADIUM_COORDS
 
 
 @dataclass(frozen=True)
@@ -103,3 +108,74 @@ def is_international(stadium_name: str | None) -> bool:
 def known_venues() -> list[Venue]:
     """Every registered venue, deduplicated across aliases."""
     return sorted(set(_VENUES.values()), key=lambda v: (v.city, v.name))
+
+
+# ── Venue features for the schedule ───────────────────────────────────────────
+
+# No domestic NFL game kicks off before this hour Eastern; a neutral-site game
+# that does is being played in Europe for a local afternoon crowd.
+_EARLIEST_DOMESTIC_KICKOFF_ET = 11
+
+
+def add_venue_features(games: pd.DataFrame) -> pd.DataFrame:
+    """Work out where each game is played and whether wind can reach the field.
+
+    Adds:
+      neutral_site   1 when neither team is at home
+      international  1 when played outside the US
+      open_air       1 when the field is exposed to the weather
+      venue_lat/lon  where to look up the forecast (NaN when the venue is unknown)
+
+    Two independent signals identify international games, because no single
+    nflverse column is reliable in every season: the stadium name is looked up in
+    the table above, and a neutral-site game kicking off before 11am Eastern can
+    only be abroad. When only the second fires, the game is known to be abroad
+    but not where, so it has no coordinates and gets no forecast.
+
+    `open_air` is deliberately strict. A retractable roof is listed as blank
+    before the game and gets closed when the weather is bad, so only stadiums
+    listed as plain `outdoors` count as exposed.
+    """
+    games = games.copy()
+
+    games["neutral_site"] = (
+        games["location"].fillna("Home").ne("Home").astype(int)
+        if "location" in games.columns else 0
+    )
+
+    stadium = games.get("stadium", pd.Series(index=games.index, dtype=object))
+    venues = list(stadium.map(lookup_venue))
+    identified = np.array([v is not None for v in venues], dtype=bool)
+    known = [v for v in venues if v is not None]
+
+    kickoff_hour = pd.to_numeric(
+        games.get("gametime", pd.Series(index=games.index, dtype=object))
+        .astype(str).str.slice(0, 2),
+        errors="coerce",
+    )
+    neutral = games["neutral_site"].to_numpy() == 1
+    abroad_by_kickoff = neutral & (kickoff_hour < _EARLIEST_DOMESTIC_KICKOFF_ET).to_numpy()
+    unidentified = abroad_by_kickoff & ~identified
+    games["international"] = (identified | abroad_by_kickoff).astype(int)
+
+    roof = games.get("roof", pd.Series(index=games.index, dtype=object))
+    open_air = roof.astype(str).str.lower().eq("outdoors").to_numpy()
+    open_air[identified] = [not v.indoor for v in known]
+    # Abroad but unidentified: `roof` describes the home team's stadium, which is
+    # the wrong building. Nearly every overseas venue is open-air.
+    open_air[unidentified] = True
+    games["open_air"] = open_air.astype(int)
+
+    home = [STADIUM_COORDS.get(team, (np.nan, np.nan)) for team in games["home_team"]]
+    lat = np.array([c[0] for c in home], dtype=float)
+    lon = np.array([c[1] for c in home], dtype=float)
+    lat[identified] = [v.lat for v in known]
+    lon[identified] = [v.lon for v in known]
+    # A neutral site we could not place (abroad and unnamed, or a domestic
+    # neutral game such as a Super Bowl) is not at the home team's stadium.
+    unplaced = neutral & ~identified
+    lat[unplaced] = np.nan
+    lon[unplaced] = np.nan
+    games["venue_lat"], games["venue_lon"] = lat, lon
+
+    return games

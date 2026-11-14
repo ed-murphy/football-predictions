@@ -1,242 +1,211 @@
-# NFL Totals Model
+# NFL Windy Unders
 
-A model that estimates the combined score of upcoming NFL games and compares it to
-the market's posted total.
+A small betting model for NFL totals. It bets one thing: **the under, in open-air
+games where a strong wind is forecast.**
 
-**Headline result: it does not beat the market.** Across a 2018–2025 walk-forward
-backtest the model's average error is 10.41 points against the closing line's 10.42,
-and the flagged bets return −3.6% ± 9.7% at −110 pricing. That is a real finding
-about how efficient NFL totals markets are, and the repository is built to report it
-honestly rather than to manufacture a signal.
+Sportsbooks lower the total when it is going to be windy, but not by enough. That
+is the only place, out of about 120 signals tested across 27 seasons, where the
+closing line could be shown to be wrong.
 
 ---
 
-## Contents
+## The result in one table
 
-1. [What it does](#what-it-does)
-2. [Performance](#performance)
-3. [Install](#install)
-4. [Weekly workflow](#weekly-workflow)
-5. [Reading the output](#reading-the-output)
-6. [Configuration](#configuration)
-7. [Project layout](#project-layout)
-8. [Tests](#tests)
+Walk-forward backtest, 2008–2026. Each season is bet by a model fitted only on
+earlier seasons; bets are graded against the closing total at −110.
 
----
+| | Bets | Record | Win rate | ROI |
+|---|---|---|---|---|
+| Kickoff wind known exactly | 540 (28 a season) | 301–232–7 | 56.5% | **+7.7% ± 4.1%** |
+| With realistic forecast error | ~19 a season | — | 55.1% | **about +5%** |
+| Break-even at −110 | | | 52.4% | 0% |
 
-## What it does
+Plan around the second row. The first uses the wind recorded at kickoff, which
+nobody knows when they place the bet.
 
-For each game it predicts **the residual**: how many points the final combined score
-will land above or below the posted total.
+### How much to trust it
 
-```
-predicted_total = market_total + shrunk_model_edge
-P(over)         = P(residual > 0)  under the model's error distribution
-```
+**Reasons to believe it**
 
-Modelling the residual rather than the total directly means the model never has to
-relearn what the market already knows (that domes are high scoring, that these two
-offences are good); it only has to find where the line is wrong. It is a ridge
-regression over ~80 features covering team scoring form, pace, per-play efficiency,
-quarterback EPA, defensive EPA, red-zone and third-down conversion, turnovers, rest,
-injuries, kickoff weather, referee tendency, and the market's own total and spread.
+- The underlying effect is strong: z = 4.6 across 6,996 games, and the fitted
+  size has barely moved since 2007.
+- It holds in every era tested (1999–2007, 2008–13, 2014–19, 2020–26).
+- It replicates with a completely independent wind measurement — weather-model
+  reanalysis at the stadium's coordinates, z = 4.8 — so it is not a quirk of how
+  gamebooks record wind.
+- It has a plain physical cause, and it has been public knowledge among bettors
+  for a decade without disappearing.
 
-Every predicted edge is multiplied by a **shrinkage coefficient** estimated by
-walk-forward validation inside the training window: the model measures how much of
-its own edge historically survived out of sample and scales its forecasts down to
-match. When there is no measurable signal the coefficient goes to zero and the model
-declines to disagree with the line at all.
+**Reasons for caution**
 
-### Why ridge and not gradient boosting
+- **The last three seasons lost: 33–37, −7.0 units.** That is within normal
+  variance for 70 bets, and it is also exactly what a fading edge would look
+  like. There is no way to tell which yet.
+- Only 10 of 19 backtest seasons were profitable. At ~25 bets a year a losing
+  season is close to a coin flip even if the edge is real.
+- The backtest's own ROI is 1.9 standard errors from zero at the chosen
+  threshold — suggestive, not proof.
+- It is graded against closing lines. Your results depend on the line you
+  actually get, which is why the bet log tracks closing-line value.
 
-The previous version of this project was an XGBoost classifier on the binary
-over/under outcome. It scored **worse than a coin flip** out of sample — holdout log
-loss 0.80 against 0.69 for always predicting 50%. Five hundred trees at depth five,
-fitted to ~2,700 near-coinflip labels, memorised noise.
-
-Every tree ensemble tried during the rewrite behaved the same way. With this much
-data and this little signal, heavy linear shrinkage is the only thing that
-generalises. See [`docs/model.md`](docs/model.md) for the comparison table.
+This is a small, real-looking edge with wide error bars. It is not a money
+machine, and most weeks it will tell you to do nothing.
 
 ---
 
-## Performance
-
-Walk-forward backtest, 2018–2025, each season scored by a model that saw only
-earlier seasons (hyperparameters and shrinkage re-selected per fold):
-
-| Metric | Model | Benchmark |
-|---|---|---|
-| Log loss | 0.6924 | 0.6931 (coin flip) |
-| AUC | 0.522 | 0.500 |
-| Mean absolute error of predicted total | 10.41 | 10.42 (repeat the line) |
-| Edge correlation | +0.022 ± 0.021 | 0 |
-| Flagged bets | 97 | — |
-| Win rate | 50.5% | 52.4% needed at −110 |
-| ROI | −3.6% ± 9.7% | 0% |
-
-**Edge correlation** — the correlation between the edge the model predicted and the
-residual that actually happened, over every game rather than only the ones bet — is
-the most stable read on whether the model knows anything. At +0.022 with a standard
-error of 0.021 it is not distinguishable from zero over this window. Fixing the
-alpha and shrinkage rather than re-selecting them per fold pushes it to about +0.05
-(z ≈ 2.5), which is a whisper of signal worth roughly 0.4% of residual variance.
-
-None of these numbers support betting. They are reported with standard errors
-precisely so that a run of good luck cannot be mistaken for an edge.
-
----
-
-## Install
+## Quick start
 
 ```bash
-git clone https://github.com/ed-murphy/football-predictions
-cd football-predictions
 python -m venv .venv
 .venv/Scripts/activate          # Windows;  source .venv/bin/activate elsewhere
 pip install -r requirements.txt
 ```
 
-Downloading source data needs `nfl_data_py`, which pins older pandas/numpy. Install
-it in a separate environment:
-
-```bash
-python -m venv download/download_env
-download/download_env/Scripts/pip install -r download/download-requirements.txt
-download/download_env/Scripts/python download/download_nfl_data.py
-```
-
-### API keys
-
-Create a `.env` in the repository root:
+Create `.env` in the repository root with a free key from
+[the-odds-api.com](https://the-odds-api.com):
 
 ```
-API_KEY_TOTALS=<the-odds-api.com key>
-API_KEY_WEATHER=<openweathermap.org key>
+API_KEY_TOTALS=<your key>
 ```
 
-Both are optional for training and backtesting; they are needed to score an upcoming
-slate. Without them the run falls back to cached lines and seasonal-normal weather.
-
----
+The key is optional. Without it the model uses the single line listed in the
+nflverse schedule file, which is enough to see the board but not to shop prices.
+Weather comes from [Open-Meteo](https://open-meteo.com), which needs no key.
 
 ## Weekly workflow
 
 ```bash
-# 1. Refresh nflverse data (schedules, play-by-play, injuries)
-download/download_env/Scripts/python download/download_nfl_data.py
-
-# 2. Retrain, backtest, and score this week's slate
 python main.py
-
-# 3. View the output
-streamlit run app.py
 ```
 
-Other entry points:
+That one command refreshes scores and schedules, pulls current lines and wind
+forecasts, prints the board, and logs any new bet. Run it Thursday for the
+Thursday game and again Friday or Saturday for the weekend — bets are only
+flagged within three days of kickoff, when forecasts are reliable.
 
-| Command | Effect |
+| Command | What it does |
 |---|---|
-| `python main.py --train-only` | fit and evaluate, write no predictions |
-| `python main.py --predict-only` | score the slate with the saved model |
-| `python main.py --backtest` | walk-forward evaluation only |
-| `python main.py --use-cached-totals` | skip the odds API, use cached lines |
-| `python main.py --skip-backtest` | train without the slow backtest |
+| `python main.py` | weekly run |
+| `python main.py backtest` | full walk-forward report |
+| `python main.py record` | every bet flagged so far, graded |
+| `streamlit run app.py` | the same board and record in a browser |
+| `python main.py --no-odds-api` | weekly run without spending Odds API quota |
 
-Refreshing the schedule matters more than it looks: it is where the venue of every
-neutral-site game comes from. If a fixture is missing from `games.parquet` the run
-still works, but falls back to guessing the venue from the home team — which is
-wrong for the eight or so games a season played abroad.
+### Reading the board
 
-### Overriding inputs by hand
-
-`data/nfl_over_unders.csv` is regenerated each run but **existing non-null values are
-preserved**, so you can correct a starting quarterback and the correction will survive
-the next refresh.
-
-Whether a game is international is *not* editable here: it is derived from the
-schedule's stadium name on every run (see `src/venues.py`). Older copies of this file
-carry a stale `international` column, which is now dropped on refresh.
-
----
-
-## Reading the output
-
-Predictions are written to `predictions/predictions_YYYYMMDD[_vN].csv`:
+```
+        kickoff (ET)      game  line  fcst mph  exp mph  P(under)  EV %  status
+Sun 2026-11-15 13:00 HOU @ CLE  39.5       9.0      8.5      49.9  -2.6  not windy enough
+Sun 2026-11-15 13:00  CAR @ NO  48.5         -      0.0      47.4  -7.4  roof: wind can't reach the field
+```
 
 | Column | Meaning |
 |---|---|
-| `total_line` | the market's posted total |
-| `pred_total` | the model's expected combined score |
-| `edge` | `pred_total - total_line`, in points |
-| `p_over` | probability the game finishes over the line |
-| `bet` | `Over`, `Under`, or blank |
-| `stake` | quarter-Kelly position size in units |
-| `line_open` / `line_movement` | earliest snapshot this week, and the move since |
-| `actual_total` / `result` | filled in once the game is played |
+| `line` | best under available at your sportsbooks (`MY_BOOKS` in `config.py`) |
+| `fcst mph` | raw wind forecast for the kickoff hour |
+| `exp mph` | what the gamebook is expected to record, after allowing for forecast error — this is what the model uses |
+| `P(under)` | probability the game finishes under that line |
+| `EV %` | expected profit per unit staked at the quoted price |
+| `status` | why it is or isn't a bet |
 
-`bet` is only populated when the edge clears the point at which it can pay for the
-vig. That threshold is **derived, not chosen**: at −110 you need to win 52.38% of
-bets, and inverting the model's own residual distribution says how many points of
-disagreement that requires (about 0.8 points at a 13-point sigma). Most weeks
-nothing qualifies, which is the correct behaviour for a model with no demonstrated
-edge.
+A bet needs an open-air stadium, kickoff within three days, and EV of at least
+2% — which works out to an expected wind of about 13 mph, or a raw forecast of
+about 15.
+
+### The bet log
+
+`predictions/bets.csv` records each bet once, the first time it is flagged, with
+the line and price available at that moment. Later runs only fill in the result.
+It also records the **closing line**: if the line keeps dropping after you bet an
+under, you beat the market, and that shows whether the edge is real long before
+the win–loss record can.
+
+---
+
+## How it works
+
+```
+log-odds(under) = −0.103 + 0.0187 × kickoff wind in mph
+```
+
+| Wind at kickoff | P(under) |
+|---|---|
+| Indoors / still | 47.4% |
+| 10 mph | 52.1% |
+| 15 mph | 54.4% |
+| 20 mph | 56.8% |
+
+Those two numbers are the entire model. It does not try to predict the score:
+the market's total is taken as the best estimate available, and the model only
+asks how far wind should tilt the odds of finishing under it.
+
+Three things turn that into a bet:
+
+1. **Forecast translation.** A forecast is a noisy estimate of game-day wind, so
+   it is shrunk toward normal before use, and shrunk harder the further out the
+   game is. A 20 mph forecast the day before becomes about 17 mph expected; the
+   same forecast five days out becomes about 15.
+2. **Line shopping.** Every sportsbook in the odds feed sets the market line
+   (their median). The bet is quoted at whichever of *your* books offers the
+   highest total, and each extra point is worth about 3% of win probability.
+3. **Stake.** Quarter-Kelly, capped at 2% of bankroll.
+
+The evidence for each of these, and everything that was tried and rejected, is in
+[`docs/model.md`](docs/model.md).
 
 ---
 
 ## Configuration
 
-Everything tunable is in [`config.py`](config.py). The choices that matter:
+Everything tunable is in [`config.py`](config.py).
 
 | Setting | Default | Effect |
 |---|---|---|
-| `RIDGE_ALPHA_GRID` | `100…30000` | penalties searched by walk-forward MSE |
-| `MIN_EDGE_MARGIN_POINTS` | `0.25` | margin above break-even required to flag a bet |
-| `KELLY_FRACTION` | `0.25` | fraction of full Kelly used for `stake` |
-| `ROLLING_WINDOW_*` | 4–5 games | how much history each form feature averages |
-| `BACKTEST_START_SEASON` | `2018` | first season scored out of sample |
+| `MY_BOOKS` | `["draftkings"]` | sportsbooks you can bet at; add more to shop lines |
+| `MIN_EV` | `0.02` | minimum expected value to flag a bet |
+| `BET_WINDOW_DAYS` | `3` | how close to kickoff a bet may be flagged |
+| `KELLY_FRACTION` | `0.25` | share of full Kelly staked |
+| `MAX_STAKE_PCT` | `2.0` | cap on any one stake, % of bankroll |
+| `FORECAST_CALIBRATION` | measured | forecast → expected wind, by days out |
 
 ---
 
 ## Project layout
 
 ```
-main.py                 CLI entry point
-config.py               every tunable in one place
+main.py                 command line: weekly run, backtest, record
+config.py               every tunable
 app.py                  Streamlit front end
 
 src/
-  constants.py          team codes, divisions, stadium coordinates
-  venues.py             international venues: coordinates and real roof state
-  rolling.py            lagged rolling means and home/away broadcasting
-  load.py               reads the cached nflverse parquet files
-  basic.py              schedule -> team-game rows, scoring form
-  qb.py                 quarterback rolling EPA (keyed on the player)
-  play_features.py      every play-derived feature, from one spec table
-  rest.py               short rest and post-bye flags
-  injuries.py           weekly injury index
-  referee.py            per-official historical totals
-  pipeline.py           orchestrates the above into a FeatureBundle
-  model_features.py     the feature contract shared by training and serving
-  model.py              TotalsModel: probabilities, thresholds, shrinkage
-  train.py              fitting and persistence
-  evaluate.py           walk-forward backtest and honest metrics
-  totals.py             odds API client and line snapshots
-  weather_forecast.py   kickoff weather forecasts
-  upcoming.py           builds feature rows for unplayed games
-  predictions.py        prediction table, grading, and file management
+  schedule.py           downloads and loads the nflverse schedule file
+  venues.py             where each game is played and whether it is open-air
+  model.py              the wind model and the betting arithmetic
+  backtest.py           walk-forward backtest and forecast stress test
+  odds.py               live totals from every sportsbook
+  weather.py            wind forecasts, translated to expected kickoff wind
+  slate.py              builds the weekly board and decides what is a bet
+  ledger.py             the permanent bet log: results and closing-line value
+  constants.py          team codes and stadium coordinates
+
+research/               scripts that reproduce the evidence (not used by the weekly run)
+  signal_scan.py            ~50 schedule-based signals vs closing totals and spreads
+  play_by_play_scan.py      68 team-form signals from play-by-play
+  reanalysis_check.py       the wind effect with independent weather data; rain
+  forecast_calibration.py   how well forecasts predict game-day wind
 
 tests/                  pytest suite
-download/               separate env for nfl_data_py extraction
-docs/model.md           methodology and the model-selection evidence
+docs/model.md           methodology, evidence, and what was rejected
+predictions/            slate.csv (this week), bets.csv (the log), backtest.csv
 ```
 
-The single most important structural rule: **training and serving share
-`model_features.build_model_matrix`.** `upcoming.py` produces raw inputs in the same
-units as `pipeline.to_game_frame`, and both go through the same builder. Adding a
-feature means editing one file.
+## Testing a new idea
 
----
+Add a line to `totals_candidates` or `spread_candidates` in
+`research/signal_scan.py` and run `python -m research.signal_scan`. A signal
+counts only if it clears |z| > 1.96 in both 1999–2013 and 2014–present with the
+same sign. That rule is what separates wind from the dozens of plausible ideas
+that looked good in one era and vanished in the other.
 
 ## Tests
 
@@ -244,6 +213,11 @@ feature means editing one file.
 python -m pytest tests -q
 ```
 
-The suite concentrates on the things that fail silently: lagged rolling windows
-leaking across team and season boundaries, home/away broadcasting duplicating rows,
-probability and Kelly arithmetic, bet grading, and train/serve column drift.
+The suite uses a synthetic league with a planted wind effect, so it can check
+things real data cannot: that the model recovers a known effect, that it finds
+nothing when nothing is there, and that changing a season's results cannot
+change the bets placed in that season.
+
+---
+
+*A personal research project, not betting advice.*

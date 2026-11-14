@@ -1,7 +1,9 @@
-"""Streamlit front end for the NFL totals model.
+"""Streamlit front end: this week's board, the live record, and the backtest.
 
-Shows what the model thinks about every game on the slate, not only the handful
-it would bet, plus the running record so the claims can be checked.
+    streamlit run app.py
+
+Reads the files `python main.py` writes; it never fetches or computes anything
+itself, so what you see is exactly what the last run produced.
 """
 from __future__ import annotations
 
@@ -11,184 +13,142 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-from src.predictions import latest_prediction_path
-from config import BACKTEST_PATH, BREAK_EVEN_WIN_RATE, DECIMAL_PAYOUT, PREDICTIONS_DIR
+from config import (
+    BACKTEST_PATH, BET_WINDOW_DAYS, BETS_PATH, MIN_EV, MY_BOOKS, SLATE_PATH, STANDARD_ODDS,
+)
+from src import ledger
+from src.model import break_even
 
-st.set_page_config(page_title="NFL Scoring Predictions", page_icon="🏈", layout="wide")
-
-
-@st.cache_data(ttl=600)
-def load_predictions() -> tuple[pd.DataFrame, str | None]:
-    path = latest_prediction_path(PREDICTIONS_DIR)
-    if path is None:
-        return pd.DataFrame(), None
-    df = pd.read_csv(path)
-    df["date"] = pd.to_datetime(df["date"])
-    for col in ("bet", "result"):
-        if col in df.columns:
-            df[col] = df[col].fillna("")
-    return df, path
+st.set_page_config(page_title="NFL windy unders", page_icon="🏈", layout="wide")
 
 
-@st.cache_data(ttl=600)
-def load_backtest() -> pd.DataFrame:
-    if not os.path.exists(BACKTEST_PATH):
-        return pd.DataFrame()
-    return pd.read_csv(BACKTEST_PATH)
+@st.cache_data(ttl=300)
+def read_csv(path: str) -> pd.DataFrame:
+    return pd.read_csv(path) if os.path.exists(path) else pd.DataFrame()
 
 
-predictions, source_path = load_predictions()
+st.title("🏈 NFL windy unders")
 
-st.title("🏈 NFL Scoring Predictions")
-
-if predictions.empty:
-    st.warning("No predictions available yet. Run `python main.py` to generate some.")
+slate = read_csv(SLATE_PATH)
+if slate.empty:
+    st.warning("No board yet. Run `python main.py` to build one.")
     st.stop()
 
-updated = datetime.fromtimestamp(os.path.getmtime(source_path))
-st.caption(f"Model output last refreshed {updated:%d %b %Y, %H:%M}")
+slate["bet"] = slate["bet"].fillna("")
+updated = datetime.fromtimestamp(os.path.getmtime(SLATE_PATH))
+st.caption(f"Board last built {updated:%a %d %b %Y, %H:%M}. Run `python main.py` to refresh.")
 
-# ── Slate ─────────────────────────────────────────────────────────────────────
-upcoming = predictions[predictions["result"].isin(["", "pending"])].copy()
-settled = predictions[predictions["result"].isin(["win", "loss", "push"])].copy()
+# ── This week ─────────────────────────────────────────────────────────────────
+flagged = slate[slate["bet"] != ""]
+open_air = slate[slate["open_air"] == 1]
 
-slate_dates = sorted(upcoming["date"].dt.date.unique())
-if slate_dates:
-    # Group the slate into weeks anchored on the first upcoming kickoff.
-    anchor = pd.Timestamp(slate_dates[0]).normalize()
-    upcoming["slate"] = ((upcoming["date"] - anchor).dt.days // 7).clip(lower=0)
-    labels = {
-        n: f"{grp['date'].min():%d %b} – {grp['date'].max():%d %b}"
-        for n, grp in upcoming.groupby("slate")
-    }
-    choice = st.selectbox(
-        "Slate", list(labels), format_func=lambda n: labels[n], index=0
-    )
-    board = upcoming[upcoming["slate"] == choice].sort_values(["date", "home_team"])
+left, middle, right = st.columns(3)
+left.metric("Games on the board", len(slate))
+middle.metric("Bets flagged", len(flagged))
+right.metric(
+    "Windiest forecast",
+    f"{open_air['forecast_wind'].max():.0f} mph" if open_air["forecast_wind"].notna().any() else "—",
+)
+
+if flagged.empty:
+    st.info("Nothing to bet right now. Most weeks have no bet or one — the model only "
+            "acts when a strong wind is forecast at an open-air stadium.")
 else:
-    board = upcoming
+    for bet in flagged.itertuples():
+        st.success(
+            f"**Under {bet.line:g}** — {bet.away_team} @ {bet.home_team}, {bet.kickoff_et} ET · "
+            f"{bet.book} {bet.under_price:+.0f} · expected wind {bet.expected_wind:.0f} mph · "
+            f"P(under) {bet.p_under:.1%} · EV {bet.ev:+.1%} · stake {bet.stake_pct:.2f}% of bankroll"
+        )
 
-flagged = board[board["bet"] != ""]
-
-col1, col2, col3 = st.columns(3)
-col1.metric("Games on this slate", len(board))
-col2.metric("Bets flagged", len(flagged))
-col3.metric(
-    "Largest disagreement",
-    f"{board['edge'].abs().max():.1f} pts" if not board.empty else "—",
-)
-
-if flagged.empty and not board.empty:
-    st.info(
-        "The model does not disagree with the market by enough to justify a bet on "
-        "this slate. That is the normal outcome — see *How to read this* below."
-    )
-
-display = board.assign(
-    Matchup=board["away_team"] + " @ " + board["home_team"],
-    Date=board["date"].dt.strftime("%a %d %b"),
-    Line=board["total_line"].round(1),
-    Model=board["pred_total"].round(1),
-    Edge=board["edge"].round(1),
-    **{"P(over)": (board["p_over"] * 100).round(1)},
-)[["Date", "Matchup", "Line", "Model", "Edge", "P(over)", "bet", "stake"]].rename(
-    columns={"bet": "Signal", "stake": "Stake (u)"}
-)
-
+board = pd.DataFrame({
+    "Kickoff (ET)": slate["kickoff_et"],
+    "Game": slate["away_team"] + " @ " + slate["home_team"],
+    "Total": slate["line"].fillna(slate["market_line"]),
+    "Book": slate["book"],
+    "Forecast wind": slate["forecast_wind"],
+    "Expected wind": slate["expected_wind"],
+    "P(under)": slate["p_under"] * 100,
+    "EV": slate["ev"] * 100,
+    "Status": slate["status"],
+})
 st.dataframe(
-    display,
-    hide_index=True,
-    use_container_width=True,
+    board, hide_index=True, width="stretch",
     column_config={
-        "Line": st.column_config.NumberColumn("Market total", format="%.1f"),
-        "Model": st.column_config.NumberColumn("Model total", format="%.1f"),
-        "Edge": st.column_config.NumberColumn(
-            "Edge", format="%+.1f", help="Model total minus market total, in points."
-        ),
-        "P(over)": st.column_config.NumberColumn("P(over)", format="%.1f%%"),
-        "Stake (u)": st.column_config.NumberColumn(
-            "Stake", format="%.2f", help="Quarter-Kelly stake in units."
-        ),
+        "Total": st.column_config.NumberColumn(format="%.1f"),
+        "Forecast wind": st.column_config.NumberColumn(
+            format="%.0f mph", help="Raw forecast for the kickoff hour."),
+        "Expected wind": st.column_config.NumberColumn(
+            format="%.1f mph",
+            help="Best estimate of the wind the gamebook will record, after allowing for "
+                 "forecast error. This is what the model uses."),
+        "P(under)": st.column_config.NumberColumn(format="%.1f%%"),
+        "EV": st.column_config.NumberColumn(
+            format="%+.1f%%", help="Expected profit per unit staked at the quoted price."),
     },
 )
 
 # ── Track record ──────────────────────────────────────────────────────────────
 st.subheader("Track record")
+live_col, backtest_col = st.columns(2)
 
-record_col, backtest_col = st.columns(2)
-
-with record_col:
-    st.markdown("**Live flagged bets**")
-    graded = settled[settled["bet"] != ""]
-    if graded.empty:
-        st.caption("No flagged bets have been settled yet.")
+with live_col:
+    st.markdown("**Live bets**")
+    bets = ledger.load_ledger(BETS_PATH)
+    summary = ledger.summarise(bets)
+    if bets.empty:
+        st.caption("No bets flagged yet.")
     else:
-        wins = int((graded["result"] == "win").sum())
-        losses = int((graded["result"] == "loss").sum())
-        pushes = int((graded["result"] == "push").sum())
-        decided = wins + losses
-        profit = wins * DECIMAL_PAYOUT - losses
-        st.metric(
-            f"{wins}–{losses}–{pushes}",
-            f"{profit:+.2f} u",
-            delta=f"{(wins / decided - BREAK_EVEN_WIN_RATE) * 100:+.1f}pp vs break-even"
-            if decided else None,
-        )
-        st.caption(
-            f"Only the last {len(settled)} graded games are retained in the "
-            "prediction file, so this is a recent record rather than a full history."
+        a, b, c = st.columns(3)
+        a.metric("Record", f"{summary['wins']}–{summary['losses']}–{summary['pushes']}",
+                 f"{summary['pending']} pending", delta_color="off")
+        b.metric("Units", f"{summary['units']:+.2f}")
+        c.metric("Closing-line value",
+                 "—" if pd.isna(summary["avg_clv_points"]) else f"{summary['avg_clv_points']:+.2f} pts",
+                 help="Line you bet minus the closing line. Positive means the market moved "
+                      "your way afterwards — the earliest sign an edge is real.")
+        st.dataframe(
+            bets[["kickoff_et", "away_team", "home_team", "line", "under_price", "expected_wind",
+                  "closing_line", "actual_total", "result", "profit_units"]],
+            hide_index=True, width="stretch",
         )
 
 with backtest_col:
-    st.markdown("**Walk-forward backtest**")
-    backtest = load_backtest()
-    if backtest.empty:
-        st.caption("Run `python main.py --backtest` to generate one.")
+    st.markdown("**Backtest, by season**")
+    seasons = read_csv(BACKTEST_PATH)
+    if seasons.empty or "units" not in seasons.columns:
+        st.caption("Run `python main.py backtest` to generate it.")
     else:
-        st.dataframe(
-            backtest[["season", "n_games", "model_mae", "market_mae",
-                      "n_bets", "win_rate", "roi"]].round(3),
-            hide_index=True, use_container_width=True,
-            column_config={
-                "n_games": "Games", "model_mae": "Model MAE",
-                "market_mae": "Market MAE", "n_bets": "Bets",
-                "win_rate": st.column_config.NumberColumn("Win rate", format="%.3f"),
-                "roi": st.column_config.NumberColumn("ROI", format="%+.3f"),
-            },
-        )
+        total_bets = int(seasons["bets"].sum())
+        wins, losses = int(seasons["wins"].sum()), int(seasons["losses"].sum())
+        a, b, c = st.columns(3)
+        a.metric("Bets", total_bets)
+        b.metric("Win rate", f"{wins / (wins + losses):.1%}", f"break-even {break_even():.1%}",
+                 delta_color="off")
+        c.metric("ROI", f"{seasons['units'].sum() / total_bets:+.1%}")
+        st.bar_chart(seasons.set_index("season")["units"], height=220)
+        st.caption("Units won per season with the kickoff wind known exactly. Expect less "
+                   "with real forecasts, and expect losing seasons: about half of them are.")
 
 # ── Explanation ───────────────────────────────────────────────────────────────
-with st.expander("How to read this"):
-    st.markdown(
-        f"""
-**Model total** is the combined score the model expects, built from each team's
-recent scoring, pace, efficiency and quarterback form, plus kickoff weather, rest,
-injuries and the referee's historical tendency.
+with st.expander("How this works"):
+    books = ", ".join(MY_BOOKS) if MY_BOOKS else "any book in the feed"
+    st.markdown(f"""
+**The idea.** Sportsbooks lower the total when it is going to be windy, but not by
+enough. Since 1999, games played in 13 mph of wind or more have finished under the
+closing total about 56% of the time; {break_even():.1%} is break-even at {STANDARD_ODDS}.
+Nothing else tested — about 120 other signals — beat the closing line.
 
-**Edge** is that number minus the market total. The market is very good at this:
-across the backtest the model's average error is within a tenth of a point of
-simply repeating the line. So the edge is almost always small, and a small edge is
-not a bet.
+**Forecast vs expected wind.** The model was fitted on the wind recorded at kickoff.
+A forecast is a noisy estimate of that, so it is shrunk toward normal before use, and
+shrunk harder the further away the game is.
 
-**Signal** only appears when the edge is large enough to pay for the vig. At -110
-you need to win **{BREAK_EVEN_WIN_RATE:.1%}** of bets to break even; the model
-translates that into the minimum number of points it must disagree by, using its
-own error distribution. Most weeks nothing qualifies.
+**When a bet is flagged.** Open-air stadium, kickoff within {BET_WINDOW_DAYS} days,
+and expected value of at least {MIN_EV:.0%} at the best under available at {books}.
 
-**Stake** is a quarter-Kelly position size for the probability shown — deliberately
-small, because the probability is itself an estimate.
-        """
-    )
+**How much to expect.** A handful of bets a month, a few percent return per bet, and
+long losing runs. See `docs/model.md` for the evidence and its limits.
+    """)
 
-st.markdown(
-    """
-    <p style='font-size:12px; color:gray;'>
-    ⚠️ <b>Disclaimer:</b> this is a statistics and engineering portfolio project, not
-    betting advice. The backtested edge is not statistically distinguishable from
-    zero. Predictions may be inaccurate, outdated, or simply wrong. Do not bet on them.
-    View the code on
-    <a href='https://github.com/ed-murphy/football-predictions' target='_blank'>GitHub</a>.
-    </p>
-    """,
-    unsafe_allow_html=True,
-)
+st.caption("A personal research project, not betting advice. The edge is small, the sample "
+           "behind it is finite, and the last three seasons of the backtest lost money.")
